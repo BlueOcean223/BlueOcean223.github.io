@@ -1,0 +1,165 @@
+<!DOCTYPE html><html lang="en" data-theme="light"><head><meta charset="UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1.0,viewport-fit=cover"><title>build your own gopher | blueOcean's Blog</title><meta name="author" content="blueOcean"><meta name="copyright" content="blueOcean"><meta name="format-detection" content="telephone=no"><meta name="theme-color" content="#ffffff"><meta name="description" content="地鼠（Gopher）是 Golang 的官方吉祥物，golang的开发者也常常称自己为gopher。它通常长这样 随着golang越来越受欢迎，gopher也越来越多的出现在各种场合。比如在一些开源项目的logo中，或者在一些网站的图标中。gopher的形象也越来越多。作为一个golang开发者，拥有一个属于自己的gopher是非常有趣的事。 而在网站 https:&#x2F;&#x2F;gopherize.me&#x2F;">
+<meta property="og:type" content="article">
+<meta property="og:title" content="build your own gopher">
+<meta property="og:url" content="http://example.com/2025/08/12/build-your-own-gopher/index.html">
+<meta property="og:site_name" content="blueOcean&#39;s Blog">
+<meta property="og:description" content="地鼠（Gopher）是 Golang 的官方吉祥物，golang的开发者也常常称自己为gopher。它通常长这样 随着golang越来越受欢迎，gopher也越来越多的出现在各种场合。比如在一些开源项目的logo中，或者在一些网站的图标中。gopher的形象也越来越多。作为一个golang开发者，拥有一个属于自己的gopher是非常有趣的事。 而在网站 https:&#x2F;&#x2F;gopherize.me&#x2F;">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://blueocean223.github.io/auto-music/img/gopher2.png">
+<meta property="article:published_time" content="2025-08-12T03:40:52.000Z">
+<meta property="article:modified_time" content="2025-08-12T04:17:18.075Z">
+<meta property="article:author" content="blueOcean">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:image" content="https://blueocean223.github.io/auto-music/img/gopher2.png"><script type="application/ld+json">{
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  "headline": "build your own gopher",
+  "url": "http://example.com/2025/08/12/build-your-own-gopher/",
+  "image": "https://blueocean223.github.io/auto-music/img/gopher2.png",
+  "datePublished": "2025-08-12T03:40:52.000Z",
+  "dateModified": "2025-08-12T04:17:18.075Z",
+  "author": [
+    {
+      "@type": "Person",
+      "name": "blueOcean",
+      "url": "http://example.com/"
+    }
+  ]
+}</script><link rel="shortcut icon" href="/img/gssy1.ico"><link rel="canonical" href="http://example.com/2025/08/12/build-your-own-gopher/index.html"><link rel="preconnect" href="//cdn.jsdelivr.net"/><link rel="preconnect" href="//busuanzi.ibruce.info"/><link rel="stylesheet" href="/css/index.css"><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free/css/all.min.css"><script>
+    (() => {
+      
+    const saveToLocal = {
+      set: (key, value, ttl) => {
+        if (!ttl) return
+        const expiry = Date.now() + ttl * 86400000
+        localStorage.setItem(key, JSON.stringify({ value, expiry }))
+      },
+      get: key => {
+        const itemStr = localStorage.getItem(key)
+        if (!itemStr) return undefined
+        const { value, expiry } = JSON.parse(itemStr)
+        if (Date.now() > expiry) {
+          localStorage.removeItem(key)
+          return undefined
+        }
+        return value
+      }
+    }
+
+    window.btf = {
+      saveToLocal,
+      getScript: (url, attr = {}) => new Promise((resolve, reject) => {
+        const script = document.createElement('script')
+        script.src = url
+        script.async = true
+        Object.entries(attr).forEach(([key, val]) => script.setAttribute(key, val))
+        script.onload = script.onreadystatechange = () => {
+          if (!script.readyState || /loaded|complete/.test(script.readyState)) resolve()
+        }
+        script.onerror = reject
+        document.head.appendChild(script)
+      }),
+      getCSS: (url, id) => new Promise((resolve, reject) => {
+        const link = document.createElement('link')
+        link.rel = 'stylesheet'
+        link.href = url
+        if (id) link.id = id
+        link.onload = link.onreadystatechange = () => {
+          if (!link.readyState || /loaded|complete/.test(link.readyState)) resolve()
+        }
+        link.onerror = reject
+        document.head.appendChild(link)
+      }),
+      addGlobalFn: (key, fn, name = false, parent = window) => {
+        if (!false && key.startsWith('pjax')) return
+        const globalFn = parent.globalFn || {}
+        globalFn[key] = globalFn[key] || {}
+        globalFn[key][name || Object.keys(globalFn[key]).length] = fn
+        parent.globalFn = globalFn
+      }
+    }
+  
+      
+      const activateDarkMode = () => {
+        document.documentElement.setAttribute('data-theme', 'dark')
+        if (document.querySelector('meta[name="theme-color"]') !== null) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#0d0d0d')
+        }
+      }
+      const activateLightMode = () => {
+        document.documentElement.setAttribute('data-theme', 'light')
+        if (document.querySelector('meta[name="theme-color"]') !== null) {
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#ffffff')
+        }
+      }
+
+      btf.activateDarkMode = activateDarkMode
+      btf.activateLightMode = activateLightMode
+
+      const theme = saveToLocal.get('theme')
+    
+          theme === 'dark' ? activateDarkMode() : theme === 'light' ? activateLightMode() : null
+        
+      
+      const asideStatus = saveToLocal.get('aside-status')
+      if (asideStatus !== undefined) {
+        document.documentElement.classList.toggle('hide-aside', asideStatus === 'hide')
+      }
+    
+      
+    const detectApple = () => {
+      if (/iPad|iPhone|iPod|Macintosh/.test(navigator.userAgent)) {
+        document.documentElement.classList.add('apple')
+      }
+    }
+    detectApple()
+  
+    })()
+  </script><script>const GLOBAL_CONFIG = {
+  root: '/',
+  algolia: undefined,
+  localSearch: undefined,
+  translate: undefined,
+  highlight: {"plugin":"highlight.js","highlightCopy":true,"highlightLang":true,"highlightHeightLimit":false,"highlightFullpage":false,"highlightMacStyle":false},
+  copy: {
+    success: 'Copy Successful',
+    error: 'Copy Failed',
+    noSupport: 'Browser Not Supported'
+  },
+  relativeDate: {
+    homepage: false,
+    post: false
+  },
+  runtime: '',
+  dateSuffix: {
+    just: 'Just now',
+    min: 'minutes ago',
+    hour: 'hours ago',
+    day: 'days ago',
+    month: 'months ago'
+  },
+  copyright: undefined,
+  lightbox: 'null',
+  Snackbar: undefined,
+  infinitegrid: {
+    js: 'https://cdn.jsdelivr.net/npm/@egjs/infinitegrid/dist/infinitegrid.min.js',
+    buttonText: 'Load More'
+  },
+  isPhotoFigcaption: false,
+  islazyloadPlugin: false,
+  isAnchor: false,
+  percent: {
+    toc: true,
+    rightside: false,
+  },
+  autoDarkmode: false
+}</script><script id="config-diff">var GLOBAL_CONFIG_SITE = {
+  title: 'build your own gopher',
+  isHighlightShrink: false,
+  isToc: false,
+  pageType: 'post'
+}</script><meta name="generator" content="Hexo 7.3.0"></head><body><div id="web_bg" style="background-image: url(/img/background.jpg);"></div><div id="sidebar"><div id="menu-mask"></div><div id="sidebar-menus"><div class="avatar-img text-center"><img src="/img/gongshuisanye.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="site-data text-center"><a href="/archives/"><div class="headline">Articles</div><div class="length-num">17</div></a><a href="/tags/"><div class="headline">Tags</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">Categories</div><div class="length-num">4</div></a></div><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> Home</span></a></div><div class="menus_item"><a class="site-page" href="/music/"><i class="fa-fw fas fa-music"></i><span> Music</span></a></div><div class="menus_item"><a class="site-page" href="/links/"><i class="fa-fw fas fa-link"></i><span> Links</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> Categories</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> Archives</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-user"></i><span> About</span></a></div></div></div></div><div class="post" id="body-wrap"><header class="post-bg" id="page-header" style="background-image: url(https://blueocean223.github.io/auto-music/img/gopher2.png);"><nav id="nav"><span id="blog-info"><a class="nav-site-title" href="/"><span class="site-name">blueOcean's Blog</span></a><a class="nav-page-title" href="/"><span class="site-name">build your own gopher</span></a></span><div id="menus"><div class="menus_items"><div class="menus_item"><a class="site-page" href="/"><i class="fa-fw fas fa-home"></i><span> Home</span></a></div><div class="menus_item"><a class="site-page" href="/music/"><i class="fa-fw fas fa-music"></i><span> Music</span></a></div><div class="menus_item"><a class="site-page" href="/links/"><i class="fa-fw fas fa-link"></i><span> Links</span></a></div><div class="menus_item"><a class="site-page" href="/categories/"><i class="fa-fw fas fa-folder-open"></i><span> Categories</span></a></div><div class="menus_item"><a class="site-page" href="/archives/"><i class="fa-fw fas fa-archive"></i><span> Archives</span></a></div><div class="menus_item"><a class="site-page" href="/about/"><i class="fa-fw fas fa-user"></i><span> About</span></a></div></div><div id="toggle-menu"><span class="site-page"><i class="fas fa-bars fa-fw"></i></span></div></div></nav><div id="post-info"><h1 class="post-title">build your own gopher</h1><div id="post-meta"><div class="meta-firstline"><span class="post-meta-date"><i class="far fa-calendar-alt fa-fw post-meta-icon"></i><span class="post-meta-label">Created</span><time class="post-meta-date-created" datetime="2025-08-12T03:40:52.000Z" title="Created 2025-08-12 11:40:52">2025-08-12</time><span class="post-meta-separator">|</span><i class="fas fa-history fa-fw post-meta-icon"></i><span class="post-meta-label">Updated</span><time class="post-meta-date-updated" datetime="2025-08-12T04:17:18.075Z" title="Updated 2025-08-12 12:17:18">2025-08-12</time></span><span class="post-meta-categories"><span class="post-meta-separator">|</span><i class="fas fa-inbox fa-fw post-meta-icon"></i><a class="post-meta-categories" href="/categories/%E5%88%86%E4%BA%AB/">分享</a></span></div><div class="meta-secondline"><span class="post-meta-separator">|</span><span class="post-meta-pv-cv" id="" data-flag-title=""><i class="far fa-eye fa-fw post-meta-icon"></i><span class="post-meta-label">Post Views:</span><span id="busuanzi_value_page_pv"><i class="fa-solid fa-spinner fa-spin"></i></span></span></div></div></div></header><main class="layout" id="content-inner"><div id="post"><article class="container post-content" id="article-container"><p>地鼠（Gopher）是 Golang 的官方吉祥物，golang的开发者也常常称自己为gopher。它通常长这样<br><img src="https://blueocean223.github.io/auto-music/img/gopher3.jpg" alt="gopher"></p>
+<p>随着golang越来越受欢迎，gopher也越来越多的出现在各种场合。比如在一些开源项目的logo中，或者在一些网站的图标中。gopher的形象也越来越多。作为一个golang开发者，拥有一个属于自己的gopher是非常有趣的事。</p>
+<p>而在网站 <a target="_blank" rel="noopener" href="https://gopherize.me/">https://gopherize.me/</a> 中，你可以根据自己的喜好，定制一个属于自己的gopher。你可以选择不同的服装、配饰、发型等，让你的gopher更符合你的口味。例如我的gopher是这样的<br><img src="https://blueocean223.github.io/auto-music/img/myGoPher.png" alt="my_gopher"></p>
+<p>参考自 <a target="_blank" rel="noopener" href="https://blog.wolfogre.com/posts/gopherize-me/">https://blog.wolfogre.com/posts/gopherize-me/</a></p>
+</article><div class="post-copyright"><div class="post-copyright__author"><span class="post-copyright-meta"><i class="fas fa-circle-user fa-fw"></i>Author: </span><span class="post-copyright-info"><a href="http://example.com">blueOcean</a></span></div><div class="post-copyright__type"><span class="post-copyright-meta"><i class="fas fa-square-arrow-up-right fa-fw"></i>Link: </span><span class="post-copyright-info"><a href="http://example.com/2025/08/12/build-your-own-gopher/">http://example.com/2025/08/12/build-your-own-gopher/</a></span></div><div class="post-copyright__notice"><span class="post-copyright-meta"><i class="fas fa-circle-exclamation fa-fw"></i>Copyright Notice: </span><span class="post-copyright-info">All articles on this blog are licensed under <a target="_blank" rel="noopener" href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a> unless otherwise stated.</span></div></div><div class="tag_share"><div class="post-share"><div class="social-share" data-image="https://blueocean223.github.io/auto-music/img/gopher2.png" data-sites="facebook,twitter,wechat,weibo,qq"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/butterfly-extsrc/sharejs/dist/css/share.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc/sharejs/dist/js/social-share.min.js" defer></script></div></div><nav class="pagination-post" id="pagination"><a class="pagination-related full-width" href="/2025/08/06/Github%E4%B8%AD%E7%9A%84License%E9%80%89%E6%8B%A9/" title="Github中的License选择"><img class="cover" src="/img/default.jpg" onerror="onerror=null;src='/img/404.jpg'" alt="cover of previous post"><div class="info"><div class="info-1"><div class="info-item-1">Previous</div><div class="info-item-2">Github中的License选择</div></div><div class="info-2"><div class="info-item-1">引言在GitHub上创建新项目时，有一个经常被忽视但极其重要的步骤——选择适当的开源许可证。许多开发者会直接跳过这一步，认为”反正我的代码是开源的，别人随便用就行”。但事实上，不添加许可证的代码默认是保留所有权利的，这意味着从法律上讲，其他人甚至没有权利查看或使用你的代码 这篇博客将介绍GitHub中常见的许可证类型，以及如何根据项目特点选择合适的许可证。 什么是开源许可证？开源许可证是一种法律文件，明确规定了他人在使用、修改和分发你的源代码时可以做什么和不可以做什么。它既保护了原作者的权利，也为使用者提供了明确的使用指南。 GitHub提供了便捷的许可证选择功能，当你在GitHub上创建新仓库时，可以点击Add a license按钮，从多种常用开源许可证中选择适合你项目的。 主流开源许可证简介MIT License特点：  非常宽松的许可证  允许商业使用、修改、分发和私有使用  唯一要求是保留原始许可证和版权声明   适用场景：  你想让代码能被尽可能广泛地使用  不关心别人是否将你的代码用于闭源商业项目  小型个人项目或工具库   Apache License...</div></div></div></a></nav></div><div class="aside-content" id="aside-content"><div class="card-widget card-info text-center"><div class="avatar-img"><img src="/img/gongshuisanye.jpg" onerror="this.onerror=null;this.src='/img/friend_404.gif'" alt="avatar"/></div><div class="author-info-name">blueOcean</div><div class="author-info-description"></div><div class="site-data"><a href="/archives/"><div class="headline">Articles</div><div class="length-num">17</div></a><a href="/tags/"><div class="headline">Tags</div><div class="length-num">0</div></a><a href="/categories/"><div class="headline">Categories</div><div class="length-num">4</div></a></div><a id="card-info-btn" target="_blank" rel="noopener" href="https://github.com/BlueOcean223"><i class="fab fa-github"></i><span>Follow Me</span></a><div class="card-info-social-icons"><a class="social-icon" href="https://github.com/BlueOcean223" target="_blank" title="Github"><i class="fab fa-github" style="color: #24292e;"></i></a></div></div><div class="card-widget card-announcement"><div class="item-headline"><i class="fas fa-bullhorn fa-shake"></i><span>Announcement</span></div><div class="announcement_content">This is my Blog</div></div><div class="sticky_layout"><div class="card-widget card-recent-post"><div class="item-headline"><i class="fas fa-history"></i><span>Recent Posts</span></div><div class="aside-list"><div class="aside-list-item"><a class="thumbnail" href="/2025/08/12/build-your-own-gopher/" title="build your own gopher"><img src="https://blueocean223.github.io/auto-music/img/gopher2.png" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="build your own gopher"/></a><div class="content"><a class="title" href="/2025/08/12/build-your-own-gopher/" title="build your own gopher">build your own gopher</a><time datetime="2025-08-12T03:40:52.000Z" title="Created 2025-08-12 11:40:52">2025-08-12</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2025/08/06/Github%E4%B8%AD%E7%9A%84License%E9%80%89%E6%8B%A9/" title="Github中的License选择"><img src="/img/default.jpg" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="Github中的License选择"/></a><div class="content"><a class="title" href="/2025/08/06/Github%E4%B8%AD%E7%9A%84License%E9%80%89%E6%8B%A9/" title="Github中的License选择">Github中的License选择</a><time datetime="2025-08-06T08:30:34.000Z" title="Created 2025-08-06 16:30:34">2025-08-06</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2025/07/29/%E8%AE%B0%E5%BD%95%E5%89%8D%E7%AB%AF%E9%81%87%E5%88%B0%E7%9A%84%E4%B8%80%E4%BA%9B%E9%97%AE%E9%A2%98/" title="记录前端遇到的一些问题"><img src="/img/BB1msIAu.jpg" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="记录前端遇到的一些问题"/></a><div class="content"><a class="title" href="/2025/07/29/%E8%AE%B0%E5%BD%95%E5%89%8D%E7%AB%AF%E9%81%87%E5%88%B0%E7%9A%84%E4%B8%80%E4%BA%9B%E9%97%AE%E9%A2%98/" title="记录前端遇到的一些问题">记录前端遇到的一些问题</a><time datetime="2025-07-28T16:39:45.000Z" title="Created 2025-07-29 00:39:45">2025-07-29</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2025/07/14/vue-vite%E8%BF%81%E7%A7%BBelectron-vite/" title="vue+vite迁移electron-vite"><img src="/img/BB1msG0V.jpg" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="vue+vite迁移electron-vite"/></a><div class="content"><a class="title" href="/2025/07/14/vue-vite%E8%BF%81%E7%A7%BBelectron-vite/" title="vue+vite迁移electron-vite">vue+vite迁移electron-vite</a><time datetime="2025-07-14T05:01:00.000Z" title="Created 2025-07-14 13:01:00">2025-07-14</time></div></div><div class="aside-list-item"><a class="thumbnail" href="/2025/07/04/http-413%E9%94%99%E8%AF%AF/" title="http 413错误"><img src="/img/syz.jpg" onerror="this.onerror=null;this.src='/img/404.jpg'" alt="http 413错误"/></a><div class="content"><a class="title" href="/2025/07/04/http-413%E9%94%99%E8%AF%AF/" title="http 413错误">http 413错误</a><time datetime="2025-07-04T15:38:43.000Z" title="Created 2025-07-04 23:38:43">2025-07-04</time></div></div></div></div></div></div></main><footer id="footer" style="background-image: url(https://blueocean223.github.io/auto-music/img/gopher2.png);"><div id="footer-wrap"><div class="copyright">&copy;2019 - 2025 By blueOcean</div><div class="framework-info"><span>Framework </span><a target="_blank" rel="noopener" href="https://hexo.io">Hexo 7.3.0</a><span class="footer-separator">|</span><span>Theme </span><a target="_blank" rel="noopener" href="https://github.com/jerryc127/hexo-theme-butterfly">Butterfly 5.3.5</a></div></div></footer></div><div id="rightside"><div id="rightside-config-hide"><button id="readmode" type="button" title="Reading Mode"><i class="fas fa-book-open"></i></button><button id="darkmode" type="button" title="Toggle Between Light and Dark Mode"><i class="fas fa-adjust"></i></button><button id="hide-aside-btn" type="button" title="Toggle Between Single-column and Double-column"><i class="fas fa-arrows-alt-h"></i></button></div><div id="rightside-config-show"><button id="rightside-config" type="button" title="Settings"><i class="fas fa-cog fa-spin"></i></button><button id="go-up" type="button" title="Back to Top"><span class="scroll-percent"></span><i class="fas fa-arrow-up"></i></button></div></div><div><script src="/js/utils.js"></script><script src="/js/main.js"></script><div class="js-pjax"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.css" media="print" onload="this.media='all'"><script src="https://cdn.jsdelivr.net/npm/aplayer/dist/APlayer.min.js"></script><script src="https://cdn.jsdelivr.net/npm/butterfly-extsrc/metingjs/dist/Meting.min.js"></script><script async data-pjax src="//busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script></div></body></html>
