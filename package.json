@@ -1,31 +1,23 @@
 {
-  "name": "hexo-site",
-  "version": "0.0.0",
+  "name": "blueocean-blog",
+  "type": "module",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "hexo generate",
-    "clean": "hexo clean",
-    "deploy": "hexo deploy",
-    "server": "hexo server"
-  },
-  "hexo": {
-    "version": "7.3.0"
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
   },
   "dependencies": {
-    "hexo": "^7.3.0",
-    "hexo-butterfly-categories-card": "^1.0.0",
-    "hexo-deployer-git": "^4.0.0",
-    "hexo-generator-archive": "^2.0.0",
-    "hexo-generator-category": "^2.0.0",
-    "hexo-generator-index": "^4.0.0",
-    "hexo-generator-tag": "^2.0.0",
-    "hexo-renderer-ejs": "^2.0.0",
-    "hexo-renderer-marked": "^6.3.0",
-    "hexo-renderer-pug": "^3.0.0",
-    "hexo-renderer-stylus": "^3.0.1",
-    "hexo-server": "^3.0.0",
-    "hexo-tag-aplayer": "^3.0.4",
-    "hexo-theme-butterfly": "^5.2.2",
-    "hexo-theme-landscape": "^1.0.0"
+    "@astrojs/markdown-remark": "^7.2.0",
+    "@astrojs/mdx": "^6.0.3",
+    "@astrojs/rss": "^4.0.18",
+    "@astrojs/sitemap": "^3.7.3",
+    "astro": "^6.4.8"
+  },
+  "devDependencies": {
+    "gray-matter": "^4.0.3",
+    "unist-util-visit": "^5.1.0"
   }
 }

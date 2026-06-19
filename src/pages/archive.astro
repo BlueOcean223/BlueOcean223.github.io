@@ -1,0 +1,61 @@
+---
+import Base from '../layouts/Base.astro';
+import { getCollection } from 'astro:content';
+
+const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
+  (a, b) => b.data.pubDate.getTime() - a.data.pubDate.getTime()
+);
+
+// Group by year
+const groups = new Map<number, typeof posts>();
+for (const post of posts) {
+  const y = post.data.pubDate.getFullYear();
+  if (!groups.has(y)) groups.set(y, []);
+  groups.get(y)!.push(post);
+}
+const years = [...groups.keys()].sort((a, b) => b - a);
+
+const md = (d: Date) =>
+  d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+---
+
+<Base title="归档">
+  <section class="container">
+    <h1>归档</h1>
+    <p class="muted">共 {posts.length} 篇文章</p>
+
+    {years.map((year) => (
+      <div class="year-group">
+        <h2 class="year">{year}</h2>
+        <ul class="archive-list">
+          {groups.get(year)!.map((post) => (
+            <li>
+              <span class="date sans">{md(post.data.pubDate)}</span>
+              <a href={`/blog/${post.id}/`}>{post.data.title}</a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ))}
+  </section>
+</Base>
+
+<style>
+  .container { padding-top: 3rem; max-width: var(--wide-width); }
+  .year-group { margin-top: 2.5rem; }
+  .year {
+    font-size: 1.1rem;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.4rem;
+    margin: 0 0 1rem;
+  }
+  .archive-list { list-style: none; padding: 0; margin: 0; }
+  .archive-list li {
+    display: flex;
+    gap: 1rem;
+    padding: 0.4rem 0;
+    align-items: baseline;
+  }
+  .date { font-size: 0.85rem; color: var(--muted); min-width: 48px; }
+</style>

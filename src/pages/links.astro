@@ -1,0 +1,118 @@
+---
+import Base from '../layouts/Base.astro';
+import { SITE } from '../config';
+
+interface Friend {
+  name: string;
+  url: string;
+  desc: string;
+  avatar?: string; // optional image; falls back to a monogram
+}
+
+const friends: Friend[] = [
+  {
+    name: '祝培竣 · PEIJUN ZHU',
+    url: 'https://zpjproduction.online/',
+    desc: 'AI Agent 工程师 / 研究者，专注 Multi-Agent、MoE、RAG。',
+    avatar: '/img/zpj.jpg',
+  },
+];
+
+const monogram = (name: string) => name.trim().charAt(0);
+---
+
+<Base title="友链" description="朋友们的站点">
+  <section class="container links">
+    <h1>友链</h1>
+    <p class="muted intro">一些朋友的站点，欢迎串门。</p>
+
+    <div class="grid">
+      {friends.map((f) => (
+        <a class="card" href={f.url} target="_blank" rel="noopener noreferrer">
+          {f.avatar ? (
+            <img class="avatar" src={f.avatar} alt={f.name} width="56" height="56" loading="lazy" />
+          ) : (
+            <span class="avatar mono" aria-hidden="true">{monogram(f.name)}</span>
+          )}
+          <span class="info">
+            <span class="name">{f.name}</span>
+            <span class="desc">{f.desc}</span>
+          </span>
+        </a>
+      ))}
+    </div>
+
+    <div class="exchange">
+      <h2>交换友链</h2>
+      <p class="muted">想互换友链的话，按下面的信息添加，并通过 <a href="mailto:blue2366108@163.com">邮件</a> 或 <a href="https://github.com/BlueOcean223">GitHub</a> 告诉我你的站点。</p>
+      <pre><code>名称：{SITE.title}
+地址：{SITE.url}
+简介：{SITE.description}
+头像：{SITE.url}/xxx.jpg</code></pre>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .links { padding-top: 3rem; max-width: var(--wide-width); }
+  .links h1 { margin: 0 0 0.3rem; }
+  .intro { margin: 0 0 2rem; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 1rem;
+  }
+  .card {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.1rem 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-soft);
+    color: inherit;
+    transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+  }
+  .card:hover {
+    text-decoration: none;
+    transform: translateY(-3px);
+    border-color: var(--accent);
+    box-shadow: 0 10px 24px rgba(80, 58, 45, 0.1);
+  }
+
+  .avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+  }
+  .avatar.mono {
+    display: grid;
+    place-items: center;
+    font-family: var(--font-sans);
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #fff;
+    background: linear-gradient(135deg, var(--accent), #d99a73);
+  }
+
+  .info { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+  .name {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1.02rem;
+    color: var(--text);
+  }
+  .card:hover .name { color: var(--accent); }
+  .desc {
+    font-size: 0.9rem;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .exchange { margin-top: 3.5rem; }
+  .exchange h2 { font-size: 1.25rem; }
+  .exchange pre { max-width: 460px; }
+</style>

@@ -1,0 +1,252 @@
+---
+import Base from './Base.astro';
+import type { CollectionEntry } from 'astro:content';
+import type { MarkdownHeading } from 'astro';
+
+interface Props {
+  post: CollectionEntry<'blog'>;
+  headings?: MarkdownHeading[];
+}
+const { post, headings = [] } = Astro.props;
+const { title, pubDate, tags } = post.data;
+
+// h1 / h2 / h3 in the table of contents
+const toc = headings.filter((h) => h.depth >= 1 && h.depth <= 3);
+
+// Group deeper headings under the nearest top-level heading for a collapsible tree
+const minDepth = toc.length ? Math.min(...toc.map((h) => h.depth)) : 1;
+type TocNode = { depth: number; slug: string; text: string; children: typeof toc };
+const tree: TocNode[] = [];
+for (const h of toc) {
+  if (h.depth === minDepth || tree.length === 0) {
+    tree.push({ depth: h.depth, slug: h.slug, text: h.text, children: [] });
+  } else {
+    tree[tree.length - 1].children.push(h);
+  }
+}
+
+const dateStr = pubDate.toLocaleDateString('zh-CN', {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+});
+---
+
+<Base title={title} description={post.data.description}>
+  <div class="post-wrap">
+    <article class="post">
+      <header class="post-header">
+        <div class="meta sans">
+          <time datetime={pubDate.toISOString()}>{dateStr}</time>
+        </div>
+        <h1>{title}</h1>
+      </header>
+
+      <div class="prose">
+        <slot />
+      </div>
+
+      {tags.length > 0 && (
+        <footer class="post-tags sans">
+          {tags.map((t) => <span class="tag">#{t}</span>)}
+        </footer>
+      )}
+
+      <nav class="post-nav sans">
+        <a href="/blog/">← 返回文章列表</a>
+      </nav>
+    </article>
+
+    {tree.length > 0 && (
+      <aside class="toc sans" aria-label="目录">
+        <p class="toc-title">目录</p>
+        <nav>
+          <ul>
+            {tree.map((node) => (
+              node.children.length > 0 ? (
+                <li class="node">
+                  <details>
+                    <summary>
+                      <span class="chevron" aria-hidden="true"></span>
+                      <a href={`#${node.slug}`}>{node.text}</a>
+                    </summary>
+                    <ul class="children">
+                      {node.children.map((c) => (
+                        <li class:list={[`lvl-${c.depth}`]}>
+                          <a href={`#${c.slug}`}>{c.text}</a>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                </li>
+              ) : (
+                <li class="node leaf">
+                  <a class="top" href={`#${node.slug}`}>{node.text}</a>
+                </li>
+              )
+            ))}
+          </ul>
+        </nav>
+      </aside>
+    )}
+  </div>
+</Base>
+
+<style>
+  .post-wrap {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) minmax(0, var(--reading-width)) minmax(200px, 1fr);
+    gap: clamp(48px, 5vw, 96px);
+    align-items: start;
+    padding: 3rem 24px 0;
+  }
+  .post { grid-column: 2; min-width: 0; }
+
+  .post-header { margin-bottom: 2.5rem; }
+  .meta {
+    font-size: 0.9rem;
+    color: var(--muted);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 0.6rem;
+  }
+  .post-header h1 { margin: 0; }
+
+  .prose :global(h1),
+  .prose :global(h2),
+  .prose :global(h3) { scroll-margin-top: 90px; }
+  .prose :global(h2) { margin-top: 2em; }
+  .prose :global(> :first-child) { margin-top: 0; }
+
+  .post-tags {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 0.9rem;
+  }
+  .tag { color: var(--muted); }
+  .post-nav { margin-top: 2rem; font-size: 0.95rem; }
+
+  /* ---- Table of contents ---- */
+  .toc {
+    grid-column: 3;
+    position: sticky;
+    top: 90px;
+    align-self: start;
+    width: 210px;
+    margin-left: clamp(0px, 3vw, 56px);
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+    font-size: 0.85rem;
+  }
+  .toc-title {
+    margin: 0 0 0.6rem;
+    color: var(--muted);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .toc ul { list-style: none; margin: 0; padding: 0; }
+  .toc .node { margin: 0; }
+  .toc details > summary { list-style: none; }
+  .toc details > summary::-webkit-details-marker { display: none; }
+
+  /* every row shares this base — Typora-style outline rows */
+  .toc summary,
+  .toc .leaf .top,
+  .toc .children li a {
+    position: relative;
+    display: block;
+    padding: 0.34rem 0.6rem 0.34rem 1.5rem;
+    border-radius: 6px;
+    color: var(--text-soft);
+    line-height: 1.45;
+    transition: background 0.13s ease, color 0.13s ease;
+  }
+  .toc summary { cursor: pointer; font-weight: 500; }
+  .toc .leaf .top { font-weight: 500; }
+  .toc .children li a { color: var(--muted); font-weight: 400; }
+  .toc .children .lvl-3 a { padding-left: 2.5rem; font-size: 0.84rem; }
+
+  /* chevron sits in the left gutter, only on collapsible rows */
+  .toc .chevron {
+    position: absolute;
+    left: 0.45rem;
+    top: 50%;
+    width: 0;
+    height: 0;
+    transform: translateY(-50%);
+    border-left: 4px solid currentColor;
+    border-top: 3.5px solid transparent;
+    border-bottom: 3.5px solid transparent;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+  .toc details[open] > summary .chevron { transform: translateY(-50%) rotate(90deg); }
+
+  /* hover */
+  .toc summary:hover,
+  .toc .leaf .top:hover,
+  .toc .children li a:hover {
+    background: var(--bg-soft);
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  /* active — filled block highlight */
+  .toc .children a.active,
+  .toc .leaf .top.active {
+    background: var(--accent);
+    color: #fff;
+  }
+  .toc summary:has(a.active) { background: var(--accent); }
+  .toc summary:has(a.active) > a { color: #fff; }
+  .toc summary:has(a.active) > .chevron { color: #fff; }
+
+  /* Not enough room beside the article — drop the TOC, center the article */
+  @media (max-width: 1080px) {
+    .post-wrap {
+      grid-template-columns: minmax(0, var(--reading-width));
+      justify-content: center;
+    }
+    .post { grid-column: 1; }
+    .toc { display: none; }
+  }
+</style>
+
+<script>
+  const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('.toc a'));
+  if (links.length) {
+    const byId = new Map<string, HTMLAnchorElement>();
+    links.forEach((l) => byId.set(decodeURIComponent(l.hash.slice(1)), l));
+
+    const headings = Array.from(
+      document.querySelectorAll<HTMLElement>('.prose h1, .prose h2, .prose h3')
+    );
+
+    const setActive = (id: string) => {
+      links.forEach((l) => l.classList.remove('active'));
+      const link = byId.get(id);
+      if (link) {
+        link.classList.add('active');
+        // reveal the section if it lives inside a collapsed <details>
+        link.closest('details')?.setAttribute('open', '');
+      }
+    };
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible[0]?.target.id) setActive(visible[0].target.id);
+      },
+      { rootMargin: '-80px 0px -70% 0px', threshold: 0 }
+    );
+
+    headings.forEach((h) => observer.observe(h));
+  }
+</script>

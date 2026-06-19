@@ -1,8 +1,18 @@
+# build output
+dist/
+.astro/
+
+# dependencies
+node_modules/
+
+# logs
+*.log
+npm-debug.log*
+
+# environment
+.env
+.env.production
+
+# macOS
 .DS_Store
 Thumbs.db
-db.json
-*.log
-node_modules/
-public/
-.deploy*/
-_multiconfig.yml

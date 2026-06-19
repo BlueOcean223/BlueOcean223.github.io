@@ -1,0 +1,74 @@
+---
+import Base from '../../layouts/Base.astro';
+import { getCollection } from 'astro:content';
+
+const posts = (await getCollection('blog', ({ data }) => !data.draft)).sort(
+  (a, b) => b.data.pubDate.getTime() - a.data.pubDate.getTime()
+);
+
+const dateStr = (d: Date) =>
+  d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+const timeStr = (d: Date) =>
+  d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+---
+
+<Base title="文章" description="全部文章">
+  <section class="container head">
+    <h1>文章</h1>
+    <p class="muted">共 {posts.length} 篇 · 按时间排序</p>
+  </section>
+
+  <section class="container post-list">
+    {posts.map((post) => (
+      <article class="entry">
+        <a class="entry-title" href={`/blog/${post.id}/`}>{post.data.title}</a>
+        <div class="entry-meta">
+          <svg class="cal" viewBox="0 0 24 24" width="15" height="15" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="18" rx="2"/>
+            <path d="M16 2v4M8 2v4M3 10h18"/>
+          </svg>
+          <span>{dateStr(post.data.pubDate)} | {timeStr(post.data.pubDate)}</span>
+        </div>
+      </article>
+    ))}
+  </section>
+</Base>
+
+<style>
+  .head { padding-top: 3rem; max-width: var(--wide-width); }
+  .head h1 { margin: 0 0 0.3rem; }
+
+  .post-list { padding-top: 1rem; max-width: var(--wide-width); }
+
+  .entry { padding: 1.2rem 0; }
+  .entry + .entry { border-top: 1px solid var(--border); }
+
+  .entry-title {
+    display: inline-block;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    font-size: 1.45rem;
+    line-height: 1.3;
+    color: var(--accent);
+    letter-spacing: -0.01em;
+  }
+  .entry-title:hover { color: var(--accent-hover); text-decoration: none; }
+
+  .entry-meta {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin: 0.5rem 0 0;
+    font-family: var(--font-sans);
+    font-style: italic;
+    font-size: 0.92rem;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .cal { flex-shrink: 0; opacity: 0.8; }
+
+  @media (max-width: 600px) {
+    .entry-title { font-size: 1.25rem; }
+  }
+</style>
