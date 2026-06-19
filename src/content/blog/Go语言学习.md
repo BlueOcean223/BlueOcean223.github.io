@@ -2,10 +2,8 @@
 title: Go语言学习
 pubDate: 2025-03-16T14:41:37.000Z
 tags: []
-category:
-  - 笔记
-cover: /img/BB1msIAu.jpg
 ---
+
 # 变量
 
 ## 变量定义

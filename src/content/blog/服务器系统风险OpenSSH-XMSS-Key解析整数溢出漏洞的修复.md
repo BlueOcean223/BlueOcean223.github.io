@@ -2,9 +2,6 @@
 title: 服务器系统风险OpenSSH XMSS Key解析整数溢出漏洞的修复
 pubDate: 2025-06-29T11:29:49.000Z
 tags: []
-category:
-  - bug
-cover: /img/yourname.jpg
 ---
 
 博主的腾讯云服务器最近在主机安全中发现**风险提示OpenSSH XMSS Key解析整数溢出漏洞**。

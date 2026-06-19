@@ -2,9 +2,6 @@
 title: MySQL的Order By
 pubDate: 2025-08-13T15:16:10.000Z
 tags: []
-category:
-  - bug
-cover: 'https://blueocean223.github.io/auto-music/img/gopher1.png'
 ---
 
 在使用MySQL的过程中，常常会用到`Order By`来对查询结果进行排序。`Order By`可以按照一个或多个列进行排序，默认是升序排列（ASC），也可以指定为降序排列（DESC）。

@@ -2,10 +2,8 @@
 title: vite+vue
 pubDate: 2025-05-26T21:26:04.000Z
 tags: []
-category:
-  - 分享
-cover: /img/yourname.jpg
 ---
+
 ### 前言
 博主在之前的前端开发中，甚至最近的一个项目，用的都是webpack+vue。webpack的运行速度很慢，因为它启动服务前要打包所有的依赖。
 

@@ -2,9 +2,6 @@
 title: Docker清理
 pubDate: 2025-06-09T11:42:08.000Z
 tags: []
-category:
-  - 分享
-cover: /img/syz.jpg
 ---
 
 ## 前言

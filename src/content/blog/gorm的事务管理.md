@@ -2,10 +2,8 @@
 title: gorm的事务管理
 pubDate: 2025-06-04T22:15:37.000Z
 tags: []
-category:
-  - 分享
-cover: /img/yourname.jpg
 ---
+
 ## 前言
 go中操作数据库一般使用`gorm`框架进行，而较少用原生的`datebase/sql`包。标准库的`datebase/sql`包需要手写sql，对于简单的sql操作来说过于繁琐，因此平时开发更倾向于使用`gorm`。而说到数据库操作，就离不开事务管理，`gorm`支持事务管理，并且非常灵活、简单
 

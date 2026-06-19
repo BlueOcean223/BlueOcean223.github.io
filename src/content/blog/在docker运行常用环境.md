@@ -2,9 +2,6 @@
 title: 在docker运行常用环境
 pubDate: 2025-06-07T23:52:30.000Z
 tags: []
-category:
-  - 分享
-cover: /img/syz2.jpg
 ---
 
 ## 前言

@@ -2,9 +2,6 @@
 title: go中的字符串与字符处理
 pubDate: 2025-09-13T11:52:03.000Z
 tags: []
-category:
-  - 分享
-cover: 'https://blueocean223.github.io/auto-music/img/gopher1.png'
 ---
 
 ## 前言

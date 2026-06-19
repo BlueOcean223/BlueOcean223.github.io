@@ -1,4 +1,5 @@
 import { defineConfig } from 'astro/config';
+import { unified } from '@astrojs/markdown-remark';
 import sitemap from '@astrojs/sitemap';
 import mdx from '@astrojs/mdx';
 import { rehypeLinkCards } from './src/lib/rehype-link-cards.mjs';
@@ -12,6 +13,8 @@ export default defineConfig({
       theme: 'github-light',
       wrap: true,
     },
-    rehypePlugins: [rehypeLinkCards],
+    processor: unified({
+      rehypePlugins: [rehypeLinkCards],
+    }),
   },
 });

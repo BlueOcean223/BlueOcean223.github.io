@@ -2,9 +2,6 @@
 title: 用hexo框架搭建个人博客网站过程记录
 pubDate: 2024-12-26T20:33:22.000Z
 tags: []
-category:
-  - 其它
-cover: /img/BB1msG0V.jpg
 ---
 
 # 用hexo框架搭建个人博客网站过程记录

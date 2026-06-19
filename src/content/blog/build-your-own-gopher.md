@@ -2,9 +2,6 @@
 title: build your own gopher
 pubDate: 2025-08-12T11:40:52.000Z
 tags: []
-category:
-  - 分享
-cover: 'https://blueocean223.github.io/auto-music/img/gopher2.png'
 ---
 
 地鼠（Gopher）是 Golang 的官方吉祥物，golang的开发者也常常称自己为gopher。它通常长这样

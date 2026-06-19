@@ -2,9 +2,6 @@
 title: langchaingo
 pubDate: 2025-09-21T23:21:02.000Z
 tags: []
-category:
-  - 笔记
-cover: 'https://blueocean223.github.io/auto-music/img/gopher2.png'
 ---
 
 # 1. LangChain Go 简介

@@ -2,8 +2,6 @@
 title: docker设置代理
 pubDate: 2025-04-11T19:08:27.000Z
 tags: []
-category:
-  - bug
 ---
 
 使用docker时，时常会需要从dockerhub上拉取镜像，但由于国内网络限制，一般难以直接拉取镜像,因此需要对docker进行一些配置，例如使用国内镜像源加速或为其配置代理。

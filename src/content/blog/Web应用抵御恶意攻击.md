@@ -2,9 +2,6 @@
 title: Web应用抵御恶意攻击
 pubDate: 2025-08-15T17:23:25.000Z
 tags: []
-category:
-  - 分享
-cover: 'https://blueocean223.github.io/auto-music/img/gopher2.png'
 ---
 
 # 前言

@@ -2,9 +2,6 @@
 title: vue+vite迁移electron-vite
 pubDate: 2025-07-14T13:01:00.000Z
 tags: []
-category:
-  - 分享
-cover: /img/BB1msG0V.jpg
 ---
 
 ## 前言

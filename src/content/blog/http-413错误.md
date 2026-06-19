@@ -2,9 +2,6 @@
 title: http 413错误
 pubDate: 2025-07-04T23:38:43.000Z
 tags: []
-category:
-  - bug
-cover: /img/syz.jpg
 ---
 
 博主最近在开发自己项目的文件相关模块。在部署到docker，前后端交互测试时，提示文件上传异常，遇到了413错误。错误信息：`Request failed with status code 413`

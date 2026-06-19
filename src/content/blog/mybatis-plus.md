@@ -2,9 +2,8 @@
 title: mybatis-plus
 pubDate: 2025-03-31T15:40:51.000Z
 tags: []
-category:
-  - 笔记
 ---
+
 Mybatisplus特性：
 
 - **无侵入**：只做增强不做改变，引入它不会对现有工程产生影响，如丝般顺滑
