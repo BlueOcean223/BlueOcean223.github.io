@@ -104,20 +104,37 @@ const dateStr = pubDate.toLocaleDateString('zh-CN', {
 
   .post-header { margin-bottom: 2.5rem; }
   .meta {
-    font-size: 0.9rem;
-    color: var(--muted);
+    font-size: 0.8rem;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--faint);
     display: flex;
     gap: 8px;
     align-items: center;
-    margin-bottom: 0.6rem;
+    margin-bottom: 0.9rem;
   }
-  .post-header h1 { margin: 0; }
+  .post-header h1 {
+    margin: 0;
+    font-size: clamp(2.2rem, 5vw, 3rem);
+    line-height: 1.12;
+  }
 
   .prose :global(h1),
   .prose :global(h2),
   .prose :global(h3) { scroll-margin-top: 90px; }
   .prose :global(h2) { margin-top: 2em; }
   .prose :global(> :first-child) { margin-top: 0; }
+
+  /* Body links carry the thick terracotta underline — Anthropic's emphasis device.
+     Cards (.link-card) opt out so they keep their own block styling. */
+  .prose :global(a:not(.link-card)) {
+    color: var(--text);
+    text-decoration: underline;
+    text-decoration-color: var(--accent);
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+  }
+  .prose :global(a:not(.link-card):hover) { color: var(--accent); }
 
   .post-tags {
     margin-top: 3rem;
