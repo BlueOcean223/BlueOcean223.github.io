@@ -167,6 +167,7 @@ const dateStr = pubDate.toLocaleDateString('zh-CN', {
     transition: background 0.13s ease, color 0.13s ease;
   }
   .toc summary { cursor: pointer; font-weight: 500; }
+  .toc summary > a { color: var(--text-soft); text-decoration: none; }
   .toc .leaf .top { font-weight: 500; }
   .toc .children li a { color: var(--muted); font-weight: 400; }
   .toc .children .lvl-3 a { padding-left: 2.5rem; font-size: 0.84rem; }
@@ -195,6 +196,7 @@ const dateStr = pubDate.toLocaleDateString('zh-CN', {
     color: var(--text);
     text-decoration: none;
   }
+  .toc summary:hover > a { color: var(--text); }
 
   /* active — filled block highlight */
   .toc .children a.active,

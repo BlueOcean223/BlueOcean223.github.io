@@ -10,7 +10,9 @@ tags: []
 ## Electron-vite
 Electron-Vite 是一个基于 Vite 的构建工具，专为 Electron 应用开发设计，旨在提供高效的开发体验和优化的生产构建。它将 Vite 的快速开发能力与 Electron 的桌面应用框架结合，简化了 Electron 项目的配置和构建流程。
 
-官方文档：https://cn.electron-vite.org/guide/introduction
+官方文档：
+
+https://cn.electron-vite.org/guide/introduction
 
 ### 安装必要依赖
 ```bash
