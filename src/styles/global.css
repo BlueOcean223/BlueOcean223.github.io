@@ -237,10 +237,45 @@ th { background: var(--bg-soft); font-family: var(--font-sans); font-weight: 600
 .audio-artist { font-size: 0.85rem; color: var(--muted); }
 .audio-meta audio { width: 100%; height: 36px; margin-top: 0.2rem; }
 
+/* ---- Embedded standalone HTML ----
+   An iframe is a real style boundary: the embedded document keeps its own
+   <head>, fonts and CSS, and none of the element rules above leak into it.
+   Use for self-contained single-file HTML (charts, one-page reports).
+   A whole cross-linked mini-site belongs in public/ as its own sub-site
+   instead — iframing a page that has its own nav and h1 reads as a
+   page-within-a-page. */
+.embed {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  margin: 1.75em 0;
+  /* Replaced by the auto-height script once the document reports its size.
+     Kept as a sane starting point so the page does not jump on load. */
+  height: 480px;
+}
+
+/* Break out of the 680px reading column, up to the site's wide width.
+   Falls back to plain full-column width when the viewport is narrow. */
+.bleed {
+  width: min(var(--wide-width), calc(100vw - 48px));
+  margin-left: calc(50% - min(var(--wide-width), calc(100vw - 48px)) / 2);
+}
+
+.embed-link {
+  display: inline-block;
+  margin: -0.6em 0 1.75em;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 @media (max-width: 600px) {
   body { font-size: 1rem; }
   h1 { font-size: 2rem; }
   h2 { font-size: 1.5rem; }
   .link-card-main { grid-template-columns: 1fr; }
   .link-card-image { width: 100%; height: auto; max-height: 160px; }
+  .bleed { width: 100%; margin-left: 0; }
 }

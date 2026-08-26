@@ -38,3 +38,34 @@ const pageTitle = title ? `${title} · ${SITE.title}` : SITE.title;
     <Footer />
   </body>
 </html>
+
+<script>
+  // Grow `iframe.embed` to its content height. Embeds are same-origin files
+  // under /public, so the height can be read directly — no postMessage handshake
+  // and no changes needed inside the embedded document.
+  const frames = document.querySelectorAll<HTMLIFrameElement>('iframe.embed');
+
+  const fit = (frame: HTMLIFrameElement) => {
+    const doc = frame.contentDocument;
+    if (!doc?.body) return;
+    // scrollHeight on <html> accounts for margins that body alone misses
+    const h = Math.max(doc.body.scrollHeight, doc.documentElement.scrollHeight);
+    if (h > 0) frame.style.height = `${h}px`;
+  };
+
+  frames.forEach((frame) => {
+    const attach = () => {
+      fit(frame);
+      // Re-fit on reflow: image loads, font swaps, viewport changes
+      const win = frame.contentWindow;
+      if (win && 'ResizeObserver' in win) {
+        const body = frame.contentDocument?.body;
+        if (body) new win.ResizeObserver(() => fit(frame)).observe(body);
+      }
+    };
+
+    // A cached iframe can already be loaded before this script runs
+    if (frame.contentDocument?.readyState === 'complete') attach();
+    frame.addEventListener('load', attach);
+  });
+</script>
