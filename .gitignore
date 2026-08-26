@@ -13,6 +13,9 @@ npm-debug.log*
 .env
 .env.production
 
+# local tooling
+.claude/
+
 # macOS
 .DS_Store
 Thumbs.db
