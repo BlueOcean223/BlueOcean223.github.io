@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>长运行兜底与稳定性 · Claude Code 源码笔记</title>
+<meta name="description" content="Claude Code 长会话兜底：compact circuit breaker、rapid-refill、预计算 compact、PTL retry、memory 提取、后台任务落盘、permission resolve-once、MCP reconnect、cleanup。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>机制专题<span class="sep">/</span>长运行兜底与稳定性</div>
+  <header class="page-head">
+    <span class="eyebrow">机制专题 · 09</span>
+    <h1>长运行兜底与稳定性保障</h1>
+    <p class="lead">源码里有很多"不是主功能但决定能不能长时间跑"的保护。它们汇总成一份稳定性清单——这是把 demo 推向生产时最容易被忽略的部分。</p>
+  </header>
+
+  <div class="prose">
+    <div class="callout">
+      <span class="callout-title">稳定性清单</span>
+      <p>以下保护共同决定了一个会话/任务能否长时间稳定运行，而不是跑着跑着卡死、烧钱或失控。</p>
+    </div>
+
+    <ol>
+      <li><strong>auto compact circuit breaker</strong>：连续失败 3 次后本 session 不再重试（<code>tengu_auto_compact_circuit_breaker</code>）。reactive 路径同样计数。</li>
+      <li><strong>rapid-refill breaker</strong>：compact 之后 3 轮内又把窗口填满，连续 3 次就停。</li>
+      <li><strong>compact prompt-too-long retry</strong>：compact 自己过长时丢最老 API round 后重试。</li>
+      <li><strong>预计算 compact</strong>：<code>tengu_sepia_moth</code> + <code>precomputeCompactionEnabled</code> 打开时，主循环可先吃已经算好的 compact。</li>
+      <li><strong>session memory</strong>：viewer / attachment 还在；不是 2.1.233 默认的先压路径。</li>
+      <li><strong>memory extraction coalescing</strong>:后台 memory 提取不重入,只保留最新 pending context。</li>
+      <li><strong>Bash subcommand cap</strong>：2.1.88 是超过 50 个子命令直接 ask。2.1.233 那条 log 字面量不在了，具体上限没再读出来。</li>
+      <li><strong>permission resolve-once</strong>:本地/远程/hook/classifier 多路竞态只允许一个结果生效,避免重复执行。</li>
+      <li><strong>async agent/background task 输出落盘</strong>:长 subagent 可后台化,结果写 <code>TaskOutput</code> 文件,避免主上下文被工具噪音填满。</li>
+      <li><strong>sync agent 可自动/手动 background</strong>:前台 agent 超过 2 秒显示 background hint;可转后台继续跑。</li>
+      <li><strong>background agent abort 独立</strong>:用户 Esc 主线程不杀后台 agent;通过 task kill 显式清理。</li>
+      <li><strong>subagent cleanup</strong>:<code>runAgent.ts</code> finally 清 MCP、session hooks、file cache、Perfetto registry、transcript mapping、todos、后台 shell task。</li>
+      <li><strong>MCP reconnect/auth/session expired 处理</strong>:401 刷 token,404/-32001 识别 session expired,SSE 重连耗尽主动 close。</li>
+      <li><strong>ToolSearch 降上下文压力</strong>:MCP/大型工具 schema 默认 defer,避免启动就塞爆工具定义。</li>
+      <li><strong>post compact cleanup</strong>:清 systemPromptSection、memory file cache、classifier approval、speculative checks、session message cache 等,防 stale state。</li>
+      <li><strong>tool result storage / content replacement</strong>:大工具结果可替换、落盘或 cache edit,降低上下文与内存占用。</li>
+    </ol>
+
+    <nav class="page-nav">
+      <a class="prev" href="./permissions.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">权限审核机制</span>
+      </a>
+      <a class="next" href="./skills-subagents-toolsearch.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">Skill、Subagent、ToolSearch</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

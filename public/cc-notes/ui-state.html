@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UI、状态与交互 · Claude Code 源码笔记</title>
+<meta name="description" content="App 根骨架、AppState store 与细粒度订阅、自研 Ink 渲染层、组件与 hooks、权限 UI 分层、Vim、多代理前台视图、bridge 状态。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>架构主线<span class="sep">/</span>UI、状态与交互</div>
+  <header class="page-head">
+    <span class="eyebrow">架构主线 · 03</span>
+    <h1>UI、状态与交互</h1>
+    <p class="lead">终端 UI 不只是画对话。自研 Ink 负责渲染，AppState 集中管会话状态；权限、任务、MCP、多代理和远程桥接都有可见面板，hooks 负责会话里持续跑着的行为。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>UI 根骨架</a></li>
+        <li><a href="#s2"><span class="num">2</span>AppState 的规模</a></li>
+        <li><a href="#s3"><span class="num">3</span>Store 与订阅方式</a></li>
+        <li><a href="#s4"><span class="num">4</span>AppState 默认值</a></li>
+        <li><a href="#s5"><span class="num">5</span>自研 Ink 渲染层</a></li>
+        <li><a href="#s6"><span class="num">6</span>组件层组织</a></li>
+        <li><a href="#s7"><span class="num">7</span>hooks 的角色</a></li>
+        <li><a href="#s8"><span class="num">8</span>权限 UI 与权限逻辑分层</a></li>
+        <li><a href="#s9"><span class="num">9</span>输入、快捷键与 Vim</a></li>
+        <li><a href="#s10"><span class="num">10</span>任务、多代理与前台视图</a></li>
+        <li><a href="#s11"><span class="num">11</span>Bridge、remote 与 UI 状态</a></li>
+        <li><a href="#s12"><span class="num">12</span>companion / bagel / tungsten / computer use</a></li>
+        <li><a href="#s13"><span class="num">13</span>这一层的结论</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. UI 根骨架<a class="anchor" href="#s1">#</a></h2>
+    <p>交互层最外壳是 <code>src/components/App.tsx</code>。它本身很薄，只负责包三层 Provider：</p>
+    <pre><code>&lt;FpsMetricsProvider&gt;
+  &lt;StatsProvider&gt;
+    &lt;AppStateProvider&gt;{children}&lt;/AppStateProvider&gt;
+  &lt;/StatsProvider&gt;
+&lt;/FpsMetricsProvider&gt;</code></pre>
+    <p>这说明 UI 根节点的定位是“运行时状态控制面”，而不是普通页面容器。真正的状态定义在 <code>src/state/AppStateStore.ts</code>，React 订阅接口在 <code>src/state/AppState.tsx</code>。</p>
+
+    <h2 id="s2">2. AppState 的规模<a class="anchor" href="#s2">#</a></h2>
+    <p><code>AppState</code> 远超普通 UI state。它集中管理 REPL 会话中的大部分产品状态，包括：</p>
+    <ul>
+      <li>settings、verbose、main model、status line；</li>
+      <li>permission mode 与完整 <code>ToolPermissionContext</code>；</li>
+      <li>tasks、foregrounded task、viewing agent task；</li>
+      <li>agent definitions、agent name registry、team context；</li>
+      <li>MCP clients/tools/commands/resources；</li>
+      <li>plugins enabled/disabled/errors/installation status/needsRefresh；</li>
+      <li>file history、commit attribution、todos；</li>
+      <li>notifications、elicitation queue；</li>
+      <li>prompt suggestion、speculation、skill improvement；</li>
+      <li>bridge 状态、remote session 状态、assistant/Kairos 状态；</li>
+      <li>buddy/companion、tmux/tungsten、web browser/bagel、computer use MCP；</li>
+      <li>worker sandbox permissions、inbox、session hooks、active overlays；</li>
+      <li>fast mode、effort、advisor、ultraplan 等实验/产品状态。</li>
+    </ul>
+    <p>这说明 UI 层不是模型输出的被动展示，而是整个代理运行时的控制平面。</p>
+
+    <h2 id="s3">3. Store 与订阅方式<a class="anchor" href="#s3">#</a></h2>
+    <p><code>src/state/AppState.tsx</code> 使用 <code>createStore()</code> + React context + <code>useSyncExternalStore</code>：</p>
+    <ul>
+      <li>Provider 创建一次 store，context value 稳定，不靠 Provider 更新触发整树重渲染。</li>
+      <li>组件用 <code>useAppState(selector)</code> 订阅 state 切片。</li>
+      <li><code>useSetAppState()</code> 返回稳定 setter，不订阅状态。</li>
+      <li><code>useAppStateStore()</code> 允许非 React 逻辑拿到 <code>getState/setState</code>。</li>
+      <li>selector 不能返回整个 state；内部构建会对这种用法直接抛错，强制细粒度订阅。</li>
+    </ul>
+    <p>这种设计说明项目明确遇到过“大状态树导致重渲染”的问题，因此把状态选择器稳定性做成运行时约束。</p>
+    <p><code>AppStateProvider</code> 还会处理一个重要竞态：remote managed settings 可能在 React mount 前就加载完成，因此 mount 后会再次检查 bypass permissions 是否已被远端禁用，并同步到 AppState。</p>
+
+    <h2 id="s4">4. AppState 默认值<a class="anchor" href="#s4">#</a></h2>
+    <p><code>getDefaultAppState()</code> 中能看到很多产品默认假设：</p>
+    <ul>
+      <li>teammate 且 plan required 时，初始 permission mode 是 <code>plan</code>，否则 <code>default</code>；</li>
+      <li><code>mcp.clients/tools/commands/resources</code> 初始为空；</li>
+      <li>plugin 状态分 enabled/disabled/errors/installing/needsRefresh；</li>
+      <li><code>thinkingEnabled</code> 由 <code>shouldEnableThinkingByDefault()</code> 决定；</li>
+      <li><code>promptSuggestionEnabled</code> 由 <code>shouldEnablePromptSuggestion()</code> 决定；</li>
+      <li><code>speculation</code> 初始为 idle；</li>
+      <li><code>remoteConnectionStatus</code> 初始为 <code>connecting</code>；</li>
+      <li>bridge 多个状态位拆开保存：enabled、explicit、outboundOnly、connected、sessionActive、reconnecting、URL、IDs、error 等。</li>
+    </ul>
+    <p>默认值本身就是一份产品功能地图。</p>
+
+    <h2 id="s5">5. 自研 Ink 渲染层<a class="anchor" href="#s5">#</a></h2>
+    <p><code>src/ink</code> 有 96 个文件，不是第三方 Ink 的薄封装，而是一套深度接管终端渲染的基础设施。目录职责大致包括：</p>
+    <ul>
+      <li><code>layout/*</code>：布局计算；</li>
+      <li><code>events/*</code>：输入、焦点、鼠标等事件；</li>
+      <li><code>termio/*</code>：ANSI/CSI/OSC/DEC 等终端协议；</li>
+      <li>renderer/screen/focus/selection/string width/search highlight/render border 等终端 UI 底层能力。</li>
+    </ul>
+    <p>为什么需要自研/深度改造？从组件规模看，这个 CLI 要支持复杂输入、多面板、可选择/可高亮 transcript、权限弹窗、任务视图、MCP 面板、Vim 模式、buddy sprite、图片引用等。社区默认抽象很难同时满足性能、选择、高亮和复杂交互。</p>
+
+    <h2 id="s6">6. 组件层组织<a class="anchor" href="#s6">#</a></h2>
+    <p><code>src/components</code> 是体量第二大的目录。重要子系统包括：</p>
+    <ul>
+      <li><code>messages</code>：主 transcript 展示。</li>
+      <li><code>PromptInput</code>：复杂输入框，承载 history、suggestion、mode、快捷键、上下文行为。</li>
+      <li><code>permissions</code>：权限请求、审批、拒绝、规则建议、auto mode 反馈。</li>
+      <li><code>mcp</code>：MCP server/tool/resource 管理与状态展示。</li>
+      <li><code>tasks</code> / <code>agents</code>：后台任务、多代理、teammate/foreground 切换。</li>
+      <li><code>CustomSelect</code>、<code>wizard</code>、<code>TrustDialog</code>、<code>ManagedSettingsSecurityDialog</code>：交互选择、onboarding、托管策略等产品界面。</li>
+      <li><code>LogoV2</code>、<code>FeedbackSurvey</code>、<code>ClaudeCodeHint</code>：品牌、反馈、推荐提示。</li>
+    </ul>
+    <p>组件层的特点是“运行时状态可视化”：权限、任务、MCP、bridge、agent、todo、remote session 都会映射成 UI 控件。</p>
+
+    <h2 id="s7">7. hooks 的角色<a class="anchor" href="#s7">#</a></h2>
+    <p><code>src/hooks</code> 有一百多个文件。它们不是简单封装生命周期，而是把“会话中持续存在的行为”拆成独立 hook。几条主线：</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>主线</th><th>代表 hook</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>输入</td><td><code>useTextInput</code>、<code>useArrowKeyHistory</code>、<code>useTypeahead</code>、<code>useVimInput</code></td><td>文本输入、历史、补全、Vim 模式</td></tr>
+        <tr><td>快捷键</td><td><code>useGlobalKeybindings</code> 等</td><td>全局键位和组件级键位协调</td></tr>
+        <tr><td>权限</td><td><code>useCanUseTool</code>、<code>toolPermission/*</code></td><td>权限决策、弹窗队列、bridge/channel 回调</td></tr>
+        <tr><td>任务</td><td><code>useTasksV2</code>、<code>useTaskListWatcher</code>、<code>useScheduledTasks</code></td><td>任务轮询和状态同步</td></tr>
+        <tr><td>MCP/插件</td><td><code>useManageMCPConnections</code>、<code>useManagePlugins</code></td><td>MCP 连接和插件状态管理</td></tr>
+        <tr><td>bridge/remote</td><td><code>useReplBridge</code>、<code>useMailboxBridge</code>、<code>useInboxPoller</code></td><td>远程控制、消息收件箱、跨端事件</td></tr>
+        <tr><td>IDE/语音</td><td><code>useIDEIntegration</code>、<code>useVoiceIntegration</code></td><td>外部 IDE 和语音能力</td></tr>
+        <tr><td>推荐</td><td><code>usePromptSuggestion</code>、<code>useClaudeCodeHintRecommendation</code>、<code>useLspPluginRecommendation</code></td><td>prompt/插件/技能推荐</td></tr>
+      </tbody>
+    </table></div>
+    <p>这说明 React hook 层承担的是“持续行为编排”，不只是 UI 局部状态。</p>
+
+    <h2 id="s8">8. 权限 UI 与权限逻辑的分层<a class="anchor" href="#s8">#</a></h2>
+    <p>权限系统分两层：</p>
+    <ul>
+      <li><code>utils/permissions/*</code>：规则、匹配、解释、classifier、auto mode、settings 同步、deny tracking。</li>
+      <li><code>components/permissions/*</code> 与 <code>hooks/toolPermission/*</code>：用户可见审批、队列、bridge/channel/coordinator/swarm worker handler。</li>
+    </ul>
+    <p>这样拆是必要的，因为权限不是一个弹窗，而是贯穿所有高风险能力的运行时治理：Bash、PowerShell、文件写入、Notebook、WebFetch、AskUserQuestion、Plan Mode、Computer Use、MCP、Agent、Sandbox 都可能触发不同决策路径。auto 下 AskUserQuestion 默认走分类器，不是一律弹窗。</p>
+    <p><code>useCanUseTool.tsx</code> 体现了 UI 与权限逻辑的连接：</p>
+    <ol>
+      <li>先调用 <code>hasPermissionsToUseTool()</code> 得到 allow/deny/ask。</li>
+      <li>allow 直接 resolve，并记录 classifier approval 等 UI 状态。</li>
+      <li>deny 可发通知，例如 auto mode denied。</li>
+      <li>ask 时根据场景分流：coordinator 自动检查、swarm worker 转发给 leader、Bash speculative classifier grace period、interactive permission dialog、bridge/channel callbacks。</li>
+    </ol>
+
+    <h2 id="s9">9. 输入、快捷键与 Vim<a class="anchor" href="#s9">#</a></h2>
+    <p><code>src/keybindings</code> 独立处理快捷键 schema、解析、匹配、冲突检查、用户自定义绑定加载和展示格式。它作为一级目录存在，说明快捷键是全局协议，而不是某个输入框内部逻辑。</p>
+    <p><code>src/vim</code> 独立实现 motion、operator、transition 和 text object。Vim 模式不是简单按键映射，而是一个独立输入子系统。2.1.233 没有 <code>/vim</code> slash，改走 <code>/config</code> → Editor mode。</p>
+    <p>两者拆开后，项目可以同时支持：</p>
+    <ul>
+      <li>全局一致的快捷键；</li>
+      <li>可切换输入模式；</li>
+      <li>PromptInput、selector、overlay、footer pill 等不同焦点区域的键位协调。</li>
+    </ul>
+
+    <h2 id="s10">10. 任务、多代理与前台视图<a class="anchor" href="#s10">#</a></h2>
+    <p>AppState 中的这些字段显示任务/多代理已经是正式交互模式：</p>
+    <ul>
+      <li><code>tasks</code>、<code>foregroundedTaskId</code>；</li>
+      <li><code>viewingAgentTaskId</code>；</li>
+      <li><code>selectedIPAgentIndex</code>、<code>coordinatorTaskIndex</code>；</li>
+      <li><code>viewSelectionMode</code>；</li>
+      <li><code>agentNameRegistry</code>；</li>
+      <li><code>teamContext</code>；</li>
+      <li><code>remoteBackgroundTaskCount</code>。</li>
+    </ul>
+    <p>这意味着 UI 需要在“主会话 transcript”“后台 task 输出”“某个 teammate/agent transcript”“远端 assistant viewer”之间切换。任务面板不是调试工具，而是主产品的一部分。</p>
+
+    <h2 id="s11">11. Bridge、remote 与 UI 状态<a class="anchor" href="#s11">#</a></h2>
+    <p>AppState 为 always-on bridge 和 remote viewer 保留了大量状态：</p>
+    <ul>
+      <li>REPL bridge enabled/explicit/outboundOnly；</li>
+      <li>env registered 与 session active；</li>
+      <li>reconnecting/error；</li>
+      <li>connect URL / session URL；</li>
+      <li>environment id / session id；</li>
+      <li>permission callbacks；</li>
+      <li>remote connection status 与 remote background task count。</li>
+    </ul>
+    <p>这说明本地终端并不是孤立前端，它可以成为 claude.ai/mobile/remote harness 的一个 session endpoint。UI 必须同时展示本地执行和远程连接状态。</p>
+
+    <h2 id="s12">12. companion、bagel、tungsten、computer use<a class="anchor" href="#s12">#</a></h2>
+    <p>一些看似“产品味”的状态也深度接入 AppState：</p>
+    <ul>
+      <li><code>companionReaction</code>、<code>companionPetAt</code>：buddy/sprite 反馈。</li>
+      <li><code>bagelActive</code>、<code>bagelUrl</code>、<code>bagelPanelVisible</code>：Chrome / Computer Use 面板状态。2.1.233 工具表没有 <code>WebBrowser</code>。</li>
+      <li><code>tungstenActiveSession</code>、<code>tungstenPanelVisible</code>、<code>tungstenLastCommand</code>：tmux/terminal capture 面板状态。2.1.233 工具表没有 <code>Tungsten</code>。</li>
+      <li><code>computerUseMcpState</code>：Computer Use MCP 的 allowlist、clipboard/system-key grants、screenshot dims、display 选择、隐藏 app 等。</li>
+    </ul>
+    <p>这些字段说明 CLI UI 已经承载多种“外部执行环境”的可视化控制，而不只是文本对话。</p>
+
+    <h2 id="s13">13. 这一层的结论<a class="anchor" href="#s13">#</a></h2>
+    <p>这一层把运行时能力做成看得见、点得着的界面：</p>
+    <ul>
+      <li>自研 Ink 层负责复杂终端渲染；</li>
+      <li>AppState store 负责统一运行时状态；</li>
+      <li>components 把权限、任务、MCP、多代理、bridge、输入体验做成可见产品；</li>
+      <li>hooks 把持续行为、外部连接、权限 race、插件/MCP 状态同步编排起来。</li>
+    </ul>
+
+    <nav class="page-nav">
+      <a class="prev" href="./commands-tools-tasks.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">命令、工具与任务</span>
+      </a>
+      <a class="next" href="./services-integrations.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">服务与外部集成</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

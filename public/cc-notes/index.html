@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code 源码分析笔记</title>
+<meta name="description" content="Claude Code 架构分析笔记，现行行为以 2.1.233 为准：启动运行时、命令工具任务、UI 状态、服务集成、Hooks、上下文压缩、Memory、权限、稳定性、企业级模式、Auto Mode、Todo 工具门控、跨会话 SendMessage。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <span class="eyebrow">2.1.233 · 源码深读</span>
+  <h1>Claude Code 源码分析笔记</h1>
+  <p class="lead">现行行为以 2.1.233 为准。slash、工具、hook 的现行表看 <code>versions/2.1.233-appjs/artifacts/</code>。架构主线按 main → init → setup → query 讲。</p>
+  <div class="pill-row">
+    <span class="pill"><span class="dot"></span>恢复 4756 文件 · src 1902</span>
+    <span class="pill"><span class="dot"></span>终端代理平台</span>
+    <span class="pill"><span class="dot"></span>16 篇专题</span>
+  </div>
+</header>
+
+<main class="page">
+  <div class="prose">
+
+    <div class="callout">
+      <span class="callout-title">一句话结论</span>
+      <p>Claude Code 是一套已经产品化、平台化的终端代理系统：它不只是“聊天 CLI + 一批工具”，而是把 REPL、headless SDK、slash 命令、模型主循环、工具协议、后台任务、多代理、MCP、插件、权限治理、远程桥接、记忆、设置托管、遥测和自研终端 UI 串成完整运行时。</p>
+    </div>
+
+    <div class="panel">
+      <h3>运行链路总览</h3>
+      <pre><code>main.tsx
+  ├─ entrypoints/init.ts        全局初始化、安全环境、遥测延后初始化
+  ├─ setup.ts                   会话、cwd、worktree、hooks、memory、预取
+  ├─ commands.ts / tools.ts     用户命令与模型工具集合
+  ├─ QueryEngine.ts / query.ts  headless/SDK 与交互主循环
+  ├─ components/App.tsx         AppState + Stats + FPS 顶层 Provider
+  └─ bridge/* / remote/*        远程会话、远程控制、session ingress</code></pre>
+    </div>
+
+    <div class="panel">
+      <h3>最短阅读路径</h3>
+      <p>只想快速理解整体，按这个顺序读源码入口：</p>
+      <ol>
+        <li><code>src/main.tsx</code> — 启动入口与模式分流</li>
+        <li><code>src/entrypoints/init.ts</code> — 全局安全与遥测边界</li>
+        <li><code>src/setup.ts</code> — 会话准备、hooks、worktree</li>
+        <li><code>src/context.ts</code> — 系统与用户上下文来源</li>
+        <li><code>src/query.ts</code> — 模型循环、compact、工具执行、恢复</li>
+        <li><code>src/QueryEngine.ts</code> — headless/SDK 怎么包 <code>query()</code></li>
+        <li><code>src/Tool.ts</code> + <code>src/tools.ts</code> — 工具协议与总表</li>
+        <li><code>src/commands.ts</code> — slash 命令总表</li>
+        <li><code>src/state/AppStateStore.ts</code> — 运行时状态控制面</li>
+        <li><code>src/services/mcp/client.ts</code> 与 <code>src/services/api/client.ts</code></li>
+      </ol>
+    </div>
+
+    <h2 id="arch">架构主线<a class="anchor" href="#arch">#</a></h2>
+    <p>从“一次输入后发生什么”出发，读这四篇。</p>
+    <div class="card-grid">
+      <a class="card" href="./startup-runtime.html">
+        <span class="card-index">01 · 架构主线</span>
+        <h3>启动与运行时</h3>
+        <p>main.tsx 模式分流、init 安全初始化、setup 会话准备、context 上下文装配、query 模型主循环与 QueryEngine、API provider 分支。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./commands-tools-tasks.html">
+        <span class="card-index">02 · 架构主线</span>
+        <h3>命令、工具与任务</h3>
+        <p>Command / Tool / Task 三层边界、2.1.233 slash 表、工具编排与流式执行、权限决策链路、BashTool、AgentTool 与多代理、Task 系统。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./ui-state.html">
+        <span class="card-index">03 · 架构主线</span>
+        <h3>UI、状态与交互</h3>
+        <p>App 根、AppState store 与细粒度订阅、自研 Ink 渲染层、组件与 hooks、权限 UI 分层、Vim（<code>/config</code> Editor mode）、多代理前台视图、bridge 状态。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./services-integrations.html">
+        <span class="card-index">04 · 架构主线</span>
+        <h3>服务与外部集成</h3>
+        <p>services/utils 分工、多 provider API、Analytics/GrowthBook、MCP 子系统、插件技能生态、权限安全、compact/memory、LSP/IDE/Chrome、CCR bridge、settings。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+    </div>
+
+    <h2 id="topics">机制专题<a class="anchor" href="#topics">#</a></h2>
+    <p>按问题直达的深挖专题：Hooks、上下文、记忆、权限、稳定性、扩展与代理。</p>
+    <div class="card-grid">
+      <a class="card" href="./hooks.html">
+        <span class="card-index">05 · 机制专题</span>
+        <h3>Hooks 机制</h3>
+        <p>运行时生命周期拦截器：配置模型、31 个 HookEvent、输入输出协议、执行链路、与权限衔接、async/HTTP/prompt/agent hook、安全治理与常见妙用。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./context-compact-checkpoint.html">
+        <span class="card-index">06 · 机制专题</span>
+        <h3>上下文、压缩与 checkpoint</h3>
+        <p>上下文来源、auto compact 阈值、compactConversation、prompt-too-long 兜底、microcompact、session-memory compact、三类 checkpoint 边界。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./memory-mechanism.html">
+        <span class="card-index">07 · 机制专题</span>
+        <h3>Memory 机制</h3>
+        <p>auto / session / agent memory，以及 2.1.233 的 <code>memory_*</code> project store 工具：写入触发、存储位置、读取时机。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./permissions.html">
+        <span class="card-index">08 · 机制专题</span>
+        <h3>权限审核机制</h3>
+        <p>useCanUseTool 决策主链路、规则来源与语法、路径/Bash 安全检查、ask 后的多路审批竞态、六种 permission mode。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./runtime-stability.html">
+        <span class="card-index">09 · 机制专题</span>
+        <h3>长运行兜底与稳定性</h3>
+        <p>compact circuit breaker、预计算 compact、PTL retry、memory 提取合并、后台任务落盘、permission resolve-once、MCP reconnect、post-compact cleanup。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./skills-subagents-toolsearch.html">
+        <span class="card-index">10 · 机制专题</span>
+        <h3>Skill、Subagent、ToolSearch</h3>
+        <p>skill 多来源发现与三类触发、Agent/subagent/fork/worktree/remote 隔离、ToolSearch 延迟工具加载、Claude Code 初始工具集合。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./agent-team.html">
+        <span class="card-index">11 · 机制专题</span>
+        <h3>Agent Team / Swarm 原理</h3>
+        <p>多代理团队如何通信、执行与协作：把文件系统当 IPC，文件锁 mailbox、消息类型协议、两个 poller、in-process runner 执行循环、任务认领、权限/计划/关闭协商。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./rewind.html">
+        <span class="card-index">12 · 机制专题</span>
+        <h3>Rewind / Checkpoint 机制</h3>
+        <p><code>/rewind</code> 的两个正交维度：对话截断与文件快照回滚，由同一 messageId 锚定；file history 三阶段防 race 写入、copyFile+hash 命名、resume 用 hard link 迁移备份。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./auto-mode-deep-dive.html">
+        <span class="card-index">14 · 版本对照</span>
+        <h3>Auto Mode 深度解析</h3>
+        <p>2.1.78 静默引入到 2.1.233：分类器架构、fail-closed、HARD/SOFT BLOCK。2.1.233 起 auto mode 将成为默认模式，分类器不再额外收费。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./todo-tools-gating.html">
+        <span class="card-index">15 · 版本对照</span>
+        <h3>Todo / 任务工具门控</h3>
+        <p>TodoWrite 是 v1，Task 四件套是 v2。2.1.16 起默认 v2；2.1.233 起新模型两套都不给。三层门：isTodoV2Enabled、isTodoToolsEnabled、isTaskListToolsEnabled。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+      <a class="card" href="./cross-session-messaging.html">
+        <span class="card-index">16 · 机制专题</span>
+        <h3>跨会话 SendMessage</h3>
+        <p>两个独立 Claude 会话互发消息：本机 UDS inbox、跨机 Remote Control / cloud 桥、按名字路由、inbound hold、权限洗钱防护。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+    </div>
+
+    <h2 id="enterprise">企业级模式<a class="anchor" href="#enterprise">#</a></h2>
+    <p>把 demo agent 推向生产时最容易被忽略、也最值得借鉴的工程设计。</p>
+    <div class="card-grid">
+      <a class="card" href="./enterprise-patterns.html">
+        <span class="card-index">13 · 进阶</span>
+        <h3>企业级 Agent 高价值设计模式</h3>
+        <p>39 节补遗：策略控制平面、信任分层、Hooks 控制平面、SSRF 防护、sandbox、worktree、插件供应链、观测隐私、事件背压、Auto Mode classifier、swarm、cache break detection 等。</p>
+        <span class="card-go">阅读 →</span>
+      </a>
+    </div>
+
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准<br>
+  slash / 工具 / hook 表看 <code>versions/2.1.233-appjs/artifacts/</code>。源码中的 <code>feature(...)</code>、<code>USER_TYPE</code> 等为打包期开关。</p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hooks 机制 · Claude Code 源码笔记</title>
+<meta name="description" content="Claude Code hook：运行时生命周期拦截器。配置模型、31 个 HookEvent、输入输出协议、执行链路、与权限衔接、async/HTTP/prompt/agent hook、安全治理与常见妙用。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>机制专题<span class="sep">/</span>Hooks 机制</div>
+  <header class="page-head">
+    <span class="eyebrow">机制专题 · 05</span>
+    <h1>Claude Code Hooks 机制</h1>
+    <p class="lead">Hook 在会话、工具、权限、压缩、子代理、配置变化等节点，把结构化 JSON 交给外部脚本或服务。模型仍负责规划；处理器可以记录、注入上下文、改写输入、给出权限结论或阻断动作。</p>
+  </header>
+
+  <div class="prose">
+    <div class="callout">
+      <span class="callout-title">材料</span>
+      <p>事件表以 2.1.233-appjs <code>hook-events.txt</code> 为准（31 个）。执行链路按 <code>utils/hooks.ts</code>、<code>schemas/hooks.ts</code>、<code>services/tools/toolHooks.ts</code> 讲。官方对照：<a href="https://code.claude.com/docs/en/hooks">code.claude.com/docs/en/hooks</a>。</p>
+    </div>
+
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>Hook 在系统里的定位</a></li>
+        <li><a href="#s2"><span class="num">2</span>配置模型</a></li>
+        <li><a href="#s3"><span class="num">3</span>支持的 HookEvent</a></li>
+        <li><a href="#s4"><span class="num">4</span>输入协议</a></li>
+        <li><a href="#s5"><span class="num">5</span>输出协议：退出码 + stdout JSON</a></li>
+        <li><a href="#s6"><span class="num">6</span>执行链路源码解读</a></li>
+        <li><a href="#s7"><span class="num">7</span>Tool hook 与权限系统</a></li>
+        <li><a href="#s8"><span class="num">8</span>Stop / SubagentStop</a></li>
+        <li><a href="#s9"><span class="num">9</span>Async hook 与 asyncRewake</a></li>
+        <li><a href="#s10"><span class="num">10</span>环境注入</a></li>
+        <li><a href="#s11"><span class="num">11</span>HTTP hook 安全边界</a></li>
+        <li><a href="#s12"><span class="num">12</span>策略与信任</a></li>
+        <li><a href="#s13"><span class="num">13</span><code>/hooks</code> 菜单</a></li>
+        <li><a href="#s14"><span class="num">14</span>常见妙用模式</a></li>
+        <li><a href="#s15"><span class="num">15</span>实践建议</a></li>
+        <li><a href="#s16"><span class="num">16</span>与官方/社区资料对照</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. Hook 在系统里的定位<a class="anchor" href="#s1">#</a></h2>
+    <p>Claude Code 的 hook 不是 React hook，而是一套“运行时生命周期拦截器”：在会话、用户提交、工具调用、权限弹窗、压缩、子代理、配置/环境变化等节点，将结构化 JSON 传给外部处理器；处理器可以记录、注入上下文、改写输入、给权限结论、阻断当前动作或让模型继续工作。核心源码入口：</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>文件</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><code>schemas/hooks.ts</code></td><td>settings.json 中 hook 配置的 Zod schema：<code>command</code> / <code>prompt</code> / <code>agent</code> / <code>http</code> 四类可持久化 hook。</td></tr>
+        <tr><td><code>entrypoints/sdk/coreSchemas.ts</code></td><td>所有 hook event、输入 payload、JSON 输出 schema 的 SDK 侧定义。</td></tr>
+        <tr><td><code>utils/hooks.ts</code></td><td>hook 运行时主实现：匹配、去重、并发执行、stdin/stdout 协议、退出码、JSON 输出、async registry、权限结果聚合。</td></tr>
+        <tr><td><code>services/tools/toolHooks.ts</code></td><td>工具执行前后 hook 与权限系统的衔接。</td></tr>
+        <tr><td><code>utils/hooks/hooksConfigSnapshot.ts</code></td><td>启动时快照、托管策略、禁用/managed-only 规则。</td></tr>
+        <tr><td><code>utils/hooks/AsyncHookRegistry.ts</code></td><td>async hook 后台进程注册、完成轮询、输出收集。</td></tr>
+        <tr><td><code>utils/hooks/execHttpHook.ts</code></td><td>HTTP hook 的 POST、header env 插值、URL allowlist、SSRF guard。</td></tr>
+        <tr><td><code>components/hooks/*</code></td><td><code>/hooks</code> TUI 菜单。这个快照里菜单偏只读，提示直接改 <code>settings.json</code>。</td></tr>
+      </tbody>
+    </table></div>
+
+    <h2 id="s2">2. 配置模型<a class="anchor" href="#s2">#</a></h2>
+    <p>settings 中的形状：</p>
+    <pre><code>{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(rm *)",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-rm.sh",
+            "timeout": 30,
+            "statusMessage": "checking shell command"
+          }
+        ]
+      }
+    ]
+  }
+}</code></pre>
+    <p>配置来源按源码可分为：用户 <code>~/.claude/settings.json</code>、项目 <code>.claude/settings.json</code>、本地项目 <code>.claude/settings.local.json</code>、托管策略 <code>policySettings</code>、plugin hook（<code>hooks/hooks.json</code>）、skill/agent frontmatter（注册为 session hook）、SDK/内部 callback（<code>getRegisteredHooks()</code>）、session function hook（内存里的 TS callback）。</p>
+    <p>源码中的持久化 hook 类型：</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>类型</th><th>配置字段</th><th>执行方式</th><th>典型用途</th></tr></thead>
+      <tbody>
+        <tr><td><code>command</code></td><td><code>command</code>, <code>shell</code>, <code>timeout</code>, <code>async</code>, <code>asyncRewake</code>, <code>if</code>, <code>statusMessage</code>, <code>once</code></td><td>spawn shell，hook input 写入 stdin，读 stdout/stderr</td><td>本地脚本、格式化、审计、安全拦截</td></tr>
+        <tr><td><code>http</code></td><td><code>url</code>, <code>headers</code>, <code>allowedEnvVars</code>, <code>timeout</code>, <code>if</code></td><td>POST JSON body 到远端，响应必须是 hook JSON</td><td>中央审计、企业策略服务、Slack/PagerDuty/webhook</td></tr>
+        <tr><td><code>prompt</code></td><td><code>prompt</code>, <code>model</code>, <code>timeout</code>, <code>if</code></td><td>用小模型做一次 JSON schema 判断，返回 <code>{ok, reason}</code></td><td>轻量语义验证，Stop/SubagentStop 检查</td></tr>
+        <tr><td><code>agent</code></td><td><code>prompt</code>, <code>model</code>, <code>timeout</code>, <code>if</code></td><td>启一个带工具的 hook agent，必须用 StructuredOutput 返回 <code>{ok, reason}</code></td><td>需要读文件/检索/多步验证的 gate</td></tr>
+      </tbody>
+    </table></div>
+    <p><code>callback</code> 与 <code>function</code> 不在 settings schema 里，主要是 SDK/内部运行时注入。</p>
+    <h3>matcher 与 if</h3>
+    <p><code>matcher</code> 是 matcher group 级别的粗过滤。源码规则：空/缺省/<code>*</code> 全匹配；只含字母数字、<code>_</code>、<code>|</code> 时精确匹配或 <code>|</code> 分隔的多精确匹配（如 <code>Edit|Write</code>）；含其它字符按 JS 正则（如 <code>mcp__memory__.*</code>）；工具名会做 legacy tool name normalize。</p>
+    <p><code>if</code> 是单个 hook 级别的细过滤，使用权限规则语法（如 <code>Bash(git *)</code>、<code>Edit(*.ts)</code>）。源码只为 <code>PreToolUse</code>、<code>PostToolUse</code>、<code>PostToolUseFailure</code>、<code>PermissionRequest</code> 准备 <code>if</code> 条件匹配器；对其它事件写 <code>if</code> 会被跳过。注意当前源码没有把 <code>PermissionDenied</code> 纳入 <code>if</code> 匹配器。</p>
+
+    <h2 id="s3">3. 2.1.233 的 HookEvent<a class="anchor" href="#s3">#</a></h2>
+    <p>2.1.233 制品里 31 个事件。相对恢复快照多了 <code>UserPromptExpansion</code>、<code>PostToolBatch</code>、<code>DirectoryAdded</code>、<code>MessageDisplay</code>。</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>事件</th><th>触发时机</th><th>matcher 字段</th><th>关键能力</th></tr></thead>
+      <tbody>
+        <tr><td><code>PreToolUse</code></td><td>工具执行前</td><td><code>tool_name</code></td><td>可阻断、可给权限结论、可改写 <code>tool_input</code>、可加上下文。</td></tr>
+        <tr><td><code>PermissionRequest</code></td><td>权限弹窗即将出现</td><td><code>tool_name</code></td><td>可程序化 allow/deny；allow 可带 <code>updatedInput</code> / <code>updatedPermissions</code>。</td></tr>
+        <tr><td><code>PermissionDenied</code></td><td>auto mode classifier 拒绝后</td><td><code>tool_name</code></td><td>可返回 <code>retry: true</code> 提示模型可重试。</td></tr>
+        <tr><td><code>PostToolUse</code></td><td>工具成功后</td><td><code>tool_name</code></td><td>可加上下文；MCP 工具可改写 <code>updatedMCPToolOutput</code>；不能撤销副作用。</td></tr>
+        <tr><td><code>PostToolUseFailure</code></td><td>工具失败后</td><td><code>tool_name</code></td><td>可把错误诊断作为额外上下文反馈给模型。</td></tr>
+        <tr><td><code>UserPromptSubmit</code></td><td>用户提交后、模型处理前</td><td>无</td><td>可阻断 prompt、注入上下文、做 prompt 审计/改写辅助。</td></tr>
+        <tr><td><code>UserPromptExpansion</code></td><td>展开 slash / prompt 命令时</td><td>无</td><td>可阻断、可 <code>preventContinuation</code>、可加 <code>additionalContext</code>。</td></tr>
+        <tr><td><code>PostToolBatch</code></td><td>一批工具跑完后</td><td>无</td><td>可加 <code>additionalContext</code>。</td></tr>
+        <tr><td><code>SessionStart</code></td><td>session startup/resume/clear/compact</td><td><code>source</code></td><td>可加载初始上下文、写 <code>CLAUDE_ENV_FILE</code>、返回 <code>initialUserMessage</code>、注册 watchPaths。</td></tr>
+        <tr><td><code>Setup</code></td><td><code>--init-only</code>、<code>--init</code>/<code>--maintenance</code> 的 headless setup</td><td><code>trigger</code></td><td>一次性准备，支持上下文注入和 env 文件。</td></tr>
+        <tr><td><code>Stop</code></td><td>Claude 准备结束当前回复时</td><td>无</td><td>可用 exit 2 或 JSON 阻止结束，让模型继续；payload 有 <code>stop_hook_active</code> 与 <code>last_assistant_message</code>。</td></tr>
+        <tr><td><code>StopFailure</code></td><td>当前 turn 因 API 错误结束</td><td><code>error</code></td><td>fire-and-forget；输出和退出码忽略。</td></tr>
+        <tr><td><code>SubagentStart</code></td><td>Agent tool 启动子代理</td><td><code>agent_type</code></td><td>给子代理注入上下文。</td></tr>
+        <tr><td><code>SubagentStop</code></td><td>子代理准备结束</td><td><code>agent_type</code></td><td>类似 Stop，但反馈给子代理；payload 有 <code>agent_transcript_path</code>。</td></tr>
+        <tr><td><code>PreCompact</code></td><td>compact 前</td><td><code>trigger</code></td><td>stdout 可作为额外 compact instruction；可阻断 compact。</td></tr>
+        <tr><td><code>PostCompact</code></td><td>compact 后</td><td><code>trigger</code></td><td>可展示 compact 后提示/审计。</td></tr>
+        <tr><td><code>SessionEnd</code></td><td>会话结束</td><td><code>reason</code></td><td>清理、审计；默认超时更短（源码默认 1500ms，可由 env 覆盖）。</td></tr>
+        <tr><td><code>Notification</code></td><td>Claude Code 发通知</td><td><code>notification_type</code></td><td>外部通知、TTS、日志。</td></tr>
+        <tr><td><code>TeammateIdle</code></td><td>team teammate 即将 idle</td><td>无</td><td>可阻止 idle，让 teammate 继续工作。</td></tr>
+        <tr><td><code>TaskCreated</code></td><td>TaskCreate 创建任务时</td><td>无</td><td>可阻断任务创建。TaskCreate 受任务工具门控，见 <a href="./todo-tools-gating.html">Todo 门控</a>。</td></tr>
+        <tr><td><code>TaskCompleted</code></td><td>Task 标记完成时</td><td>无</td><td>可阻断完成。</td></tr>
+        <tr><td><code>Elicitation</code></td><td>MCP server 请求用户输入</td><td><code>mcp_server_name</code></td><td>可自动 accept/decline/cancel，跳过 UI。</td></tr>
+        <tr><td><code>ElicitationResult</code></td><td>用户响应 MCP elicitation 后</td><td><code>mcp_server_name</code></td><td>可观察或覆盖发回 MCP server 的响应。</td></tr>
+        <tr><td><code>ConfigChange</code></td><td>settings/skills 等配置变更</td><td><code>source</code></td><td>审计或阻断配置热更新；policy settings 变更不能被 hook 阻断。</td></tr>
+        <tr><td><code>InstructionsLoaded</code></td><td>CLAUDE.md / rules 加载进上下文</td><td><code>load_reason</code></td><td>观测/审计；不支持阻断。</td></tr>
+        <tr><td><code>WorktreeCreate</code></td><td>创建隔离 worktree</td><td>无</td><td>可替换默认 git worktree 创建逻辑，输出绝对路径。</td></tr>
+        <tr><td><code>WorktreeRemove</code></td><td>删除 worktree</td><td>无</td><td>自定义清理。</td></tr>
+        <tr><td><code>CwdChanged</code></td><td>cwd 改变后</td><td>无</td><td>写 <code>CLAUDE_ENV_FILE</code>，动态更新 FileChanged watchPaths。</td></tr>
+        <tr><td><code>FileChanged</code></td><td>被 watch 的文件变化</td><td>basename(<code>file_path</code>)</td><td>reactive env，如 <code>.envrc</code>/<code>.env</code> 变化后更新 shell env。</td></tr>
+        <tr><td><code>DirectoryAdded</code></td><td><code>/add-dir</code> 或 SDK <code>register_repo_root</code> 注册新工作目录后</td><td>无</td><td>新工作目录进会话。</td></tr>
+        <tr><td><code>MessageDisplay</code></td><td>展示 assistant 消息时</td><td>无</td><td>可转换或隐藏消息文本。</td></tr>
+      </tbody>
+    </table></div>
+
+    <h2 id="s4">4. 输入协议<a class="anchor" href="#s4">#</a></h2>
+    <p>所有 hook input 都带基础字段：</p>
+    <pre><code>{
+  "session_id": "...",
+  "transcript_path": "...",
+  "cwd": "...",
+  "permission_mode": "default|acceptEdits|bypassPermissions|plan|dontAsk|auto",
+  "agent_id": "... optional, subagent only",
+  "agent_type": "... optional"
+}</code></pre>
+    <p>不同事件追加自己的字段，例如：</p>
+    <pre><code>{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "npm test" },
+  "tool_use_id": "toolu_...",
+  "session_id": "...",
+  "transcript_path": "...",
+  "cwd": "/repo"
+}</code></pre>
+    <p>命令 hook 通过 stdin 收到这个 JSON，HTTP hook 通过 POST body 收到同样 JSON。源码用 <code>jsonStringify(hookInput)</code> 一次性序列化，所有同批 hook 共享。</p>
+
+    <h2 id="s5">5. 输出协议：退出码 + stdout JSON<a class="anchor" href="#s5">#</a></h2>
+    <h3>5.1 通用退出码</h3>
+    <div class="table-wrap"><table>
+      <thead><tr><th>退出码</th><th>源码行为</th></tr></thead>
+      <tbody>
+        <tr><td><code>0</code></td><td>成功。stdout 如果是 JSON 则按 hook JSON schema 解析；否则作为普通成功输出。</td></tr>
+        <tr><td><code>2</code></td><td>blocking。生成 <code>blockingError</code>，不同事件的上层消费者决定“阻断工具 / 给模型反馈 / 阻止停止 / 阻止 compact”。</td></tr>
+        <tr><td>其它非零</td><td>non-blocking error。stderr 展示给用户或 debug，主流程通常继续。</td></tr>
+      </tbody>
+    </table></div>
+    <p>官方文档也把 exit code 2 称为阻断控制点：<code>PreToolUse</code> 可阻断工具，<code>Stop</code> 可迫使 Claude 继续工作，<code>UserPromptSubmit</code> 可阻断用户 prompt。</p>
+    <h3>5.2 JSON 输出顶层字段</h3>
+    <p>stdout 以 <code>{</code> 开头时，源码尝试解析 hook JSON：</p>
+    <pre><code>{
+  "continue": true,
+  "suppressOutput": false,
+  "stopReason": "why stop when continue=false",
+  "decision": "approve|block",
+  "reason": "human/model visible reason",
+  "systemMessage": "warning shown to user/model as hook_system_message",
+  "hookSpecificOutput": { "hookEventName": "..." }
+}</code></pre>
+    <p>要点：<code>continue: false</code> 会设置 <code>preventContinuation</code>；<code>decision: "approve"</code> 映射成 permission allow，<code>"block"</code> 映射成 deny + blockingError；<code>hookSpecificOutput.hookEventName</code> 必须等于当前事件，源码会校验；HTTP hook 响应必须是 JSON，空 body 当作 <code>{}</code>，非 2xx / 超时 / 连接错误是 non-blocking error，真正阻断要返回 2xx + JSON <code>decision: "block"</code>。</p>
+    <h3>5.3 事件特定输出</h3>
+    <pre><code>{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow|deny|ask",
+    "permissionDecisionReason": "...",
+    "updatedInput": { "command": "npm test -- --runInBand" },
+    "additionalContext": "Tell Claude why this input was adjusted."
+  }
+}</code></pre>
+    <pre><code>{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": "Lint failed; ask Claude to fix these files.",
+    "updatedMCPToolOutput": { "...": "MCP only" }
+  }
+}</code></pre>
+    <pre><code>{
+  "hookSpecificOutput": {
+    "hookEventName": "PermissionRequest",
+    "decision": {
+      "behavior": "allow",
+      "updatedInput": { "file_path": "/safe/path" },
+      "updatedPermissions": []
+    }
+  }
+}</code></pre>
+    <pre><code>{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "Repo state summary...",
+    "initialUserMessage": "Run /doctor first",
+    "watchPaths": ["/repo/.env"]
+  }
+}</code></pre>
+    <pre><code>{
+  "hookSpecificOutput": {
+    "hookEventName": "Elicitation",
+    "action": "accept",
+    "content": { "answer": "..." }
+  }
+}</code></pre>
+
+    <h2 id="s6">6. 执行链路源码解读<a class="anchor" href="#s6">#</a></h2>
+    <p>主链路在 <code>executeHooks()</code>：</p>
+    <ol>
+      <li>检查全局禁用：<code>disableAllHooks</code>、<code>CLAUDE_CODE_SIMPLE</code>。</li>
+      <li>interactive 模式下检查 workspace trust；未 trust 不运行任何 hook。</li>
+      <li>从 snapshot、registered hooks、session hooks 合并配置。</li>
+      <li>按 event 的 matcher 字段做粗匹配。</li>
+      <li>对 command/prompt/agent/http 做去重：command key 含 shell + command + if；http key 含 url + if；plugin/skill 用 root namespace 防止跨插件误去重。</li>
+      <li>对有 <code>if</code> 的 hook 做细匹配。</li>
+      <li>发 progress message。</li>
+      <li>同批匹配到的 hook 并发运行，每个 hook 有自己的 timeout/abort signal。</li>
+      <li>聚合结果：阻断、systemMessage、additionalContext、updatedInput、permissionBehavior、watchPaths、elicitation response 等。</li>
+      <li>记录 analytics / OTel / stats。</li>
+    </ol>
+    <p>这意味着：多个 hook 默认并行，不能假设 settings 数组里的前一个 hook 已经修改了下一个 hook 的输入。若需要顺序依赖，应写成一个 dispatcher 脚本。</p>
+
+    <h2 id="s7">7. Tool hook 与权限系统的细节<a class="anchor" href="#s7">#</a></h2>
+    <h3>7.1 PreToolUse</h3>
+    <p><code>executePreToolHooks()</code> 在工具真正执行前构造 input。<code>services/tools/toolHooks.ts</code> 将结果接入权限流：</p>
+    <ul>
+      <li><code>blockingError</code> → 最终权限 decision 变成 deny。</li>
+      <li><code>permissionDecision: "allow"</code> → 可跳过交互式权限弹窗，但源码仍会再跑 settings deny/ask 规则；hook allow 不能覆盖显式 deny/ask 规则。</li>
+      <li><code>permissionDecision: "ask"</code> → 强制进入权限弹窗，并把 hook reason 作为提示。</li>
+      <li><code>updatedInput</code>：配合 allow/ask 时随权限结果传递；没有 permission decision 时也可 passthrough 改写工具输入，继续正常权限流程。</li>
+      <li>多个 hook 的 permission precedence：<code>deny &gt; ask &gt; allow</code>。</li>
+    </ul>
+    <p>妙用：自动给危险命令加 <code>--dry-run</code> 或替换成安全 wrapper；拦截 <code>.env</code>、生产数据库、<code>rm -rf</code>、<code>git push --force</code>；对 Bash 子命令用 <code>if: "Bash(npm publish*)"</code> 精确触发，避免每个 <code>ls</code> 都 spawn 慢脚本。</p>
+    <h3>7.2 PermissionRequest</h3>
+    <p>这个事件比 PreToolUse 更贴近“用户即将被打断”的时刻。hook 可以自动 allow/deny 并带 <code>updatedPermissions</code>。适合团队内安全策略、CI/headless 自动审批、低风险工具自动放行。</p>
+    <h3>7.3 PostToolUse / PostToolUseFailure</h3>
+    <p>PostToolUse 发生在工具副作用之后，不能撤销已经发生的写文件/命令执行。但它可以：把 lint/test/format 结果通过 <code>additionalContext</code> 反馈给 Claude；对 MCP tool output 做 <code>updatedMCPToolOutput</code> 替换；用 exit 2 或 <code>continue:false</code> 让模型收到反馈并继续修复，但这不是“回滚工具”。PostToolUseFailure 适合错误分类、自动给失败命令补诊断上下文。</p>
+
+    <h2 id="s8">8. Stop / SubagentStop：完成条件 gate<a class="anchor" href="#s8">#</a></h2>
+    <p><code>Stop</code> 与 <code>SubagentStop</code> 是最适合做“完成前验收”的点。payload 包含：<code>stop_hook_active</code>（是否已在 stop hook 递归中）、<code>last_assistant_message</code>（不用读 transcript 就能检查最后回复）；<code>SubagentStop</code> 额外有 <code>agent_transcript_path</code>、<code>agent_id</code>、<code>agent_type</code>。用法：</p>
+    <ul>
+      <li>command hook exit 2，把 stderr 作为 “Stop hook feedback” 给模型，让模型继续。</li>
+      <li>prompt hook 返回 <code>{"ok": false, "reason": "tests were not run"}</code>，源码会转成 blocking + <code>preventContinuation</code>。</li>
+      <li>agent hook 启一个小 agent 读取 transcript / grep 文件，做更强验收。</li>
+    </ul>
+    <p>源码里 prompt/agent hook 都强制结构化输出 <code>{ok:boolean, reason?:string}</code>。agent hook 还会过滤掉不适合 agent 内部使用的工具，并限制最大 turn，防止 hook 自己失控。</p>
+
+    <h2 id="s9">9. Async hook 与 asyncRewake<a class="anchor" href="#s9">#</a></h2>
+    <p>command hook 有两种 async 方式：配置字段 <code>"async": true</code> 或 <code>"asyncRewake": true</code>；脚本第一行 stdout 输出 <code>{"async": true, "asyncTimeout": 15000}</code>。源码要求“第一行”是 async JSON；如果进程一次性输出多行，源码只解析第一行。async 后台进程进入 <code>AsyncHookRegistry</code>：</p>
+    <ul>
+      <li>运行时不阻塞主流程。</li>
+      <li>完成后扫描 stdout，寻找第一条非 async JSON 作为最终 sync response。</li>
+      <li><code>asyncTimeout</code> 在这个快照里按毫秒使用。</li>
+      <li><code>asyncRewake</code> 特殊：不走普通 registry，进程完成时若 exit code 2，会把 blocking feedback 作为 <code>task-notification</code> 入队，唤醒/打断模型继续处理。</li>
+    </ul>
+    <p>适合 async 的场景：日志、备份、通知、远端审计。不要把安全阻断、权限 allow/deny 这类必须同步生效的逻辑做 async。</p>
+
+    <h2 id="s10">10. 环境注入：CLAUDE_ENV_FILE、CwdChanged、FileChanged<a class="anchor" href="#s10">#</a></h2>
+    <p><code>SessionStart</code>、<code>Setup</code>、<code>CwdChanged</code>、<code>FileChanged</code> 的 bash command hook 会收到 <code>CLAUDE_ENV_FILE</code> 环境变量。hook 可把 shell export 写入该文件：</p>
+    <pre><code>cat &gt;&gt; "$CLAUDE_ENV_FILE" &lt;&lt;'EOF'
+export FOO=bar
+export PATH="$PWD/node_modules/.bin:$PATH"
+EOF</code></pre>
+    <p>后续 BashTool 执行时，<code>getSessionEnvironmentScript()</code> 会把 session-env 目录下的 hook env 文件按优先级拼起来：</p>
+    <pre><code>setup -&gt; sessionstart -&gt; cwdchanged -&gt; filechanged</code></pre>
+    <p><code>CwdChanged</code> 变化时会清空 cwd/filechanged env 文件，重新运行相关 hook。<code>FileChanged</code> 的 watch 逻辑：settings 中 <code>FileChanged</code> 的 <code>matcher</code> 是当前 cwd 下要 watch 的文件名，可用 <code>|</code> 分隔（如 <code>.envrc|.env</code>）；hook 输出可返回 <code>watchPaths</code> 动态扩展 watch list；文件变化后执行 <code>executeFileChangedHooks(file_path, event)</code> 并可更新 env。这是官方文档提到的 direnv 类玩法在源码中的实现。</p>
+
+    <h2 id="s11">11. HTTP hook 安全边界<a class="anchor" href="#s11">#</a></h2>
+    <p><code>execHttpHook.ts</code> 的安全设计比较完整：</p>
+    <ul>
+      <li>POST <code>Content-Type: application/json</code>。</li>
+      <li><code>allowedHttpHookUrls</code>：URL allowlist，<code>undefined</code> 表示不限制，空数组表示全部禁止，支持 <code>*</code> 通配。</li>
+      <li>header 值支持 <code>$VAR</code> / <code>${VAR}</code> 插值，但只有 hook 的 <code>allowedEnvVars</code> 与全局 <code>httpHookAllowedEnvVars</code> 交集中的变量会被解析；其它变量变空字符串。</li>
+      <li>header value 会移除 CR/LF/NUL，防止 header injection。</li>
+      <li>默认禁用 axios redirect（<code>maxRedirects: 0</code>）。</li>
+      <li>没有 sandbox/env proxy 时走 <code>ssrfGuardedLookup</code>，阻止私网/link-local SSRF，但允许 loopback 方便本地开发。</li>
+      <li>sandbox 开启时通过 sandbox network proxy，由 proxy 强制网络 allowlist。</li>
+    </ul>
+    <p>这使 HTTP hook 更适合企业集中策略，但仍需要把 URL allowlist 和 secret env allowlist 配好。</p>
+
+    <h2 id="s12">12. 策略与信任<a class="anchor" href="#s12">#</a></h2>
+    <p>源码里的防护点：</p>
+    <ul>
+      <li>interactive 模式下所有 hook 都要求 workspace trust；未接受 trust dialog 不运行，防止 <code>.claude/settings.json</code> RCE。</li>
+      <li>non-interactive/SDK 模式 trust 隐含成立。</li>
+      <li>policySettings <code>disableAllHooks: true</code> 会禁用所有 hook，包括 managed。</li>
+      <li>非 managed settings 的 <code>disableAllHooks: true</code> 不能禁用 managed hooks，而是使运行时进入 managed-only。</li>
+      <li>policySettings <code>allowManagedHooksOnly: true</code> 只使用托管 hook；用户/项目/local/plugin/session hook 被跳过。</li>
+      <li><code>strictPluginOnlyCustomization</code> 会阻止用户/项目/local settings hook，但保留 managed/plugin 合法入口。</li>
+      <li><code>CLAUDE_CODE_SIMPLE</code> 会直接跳过 hook。</li>
+      <li>plugin hook 执行前检查 pluginRoot 是否存在，避免“插件目录丢失导致脚本 exit 2，被误判为故意阻断”。</li>
+    </ul>
+
+    <h2 id="s13">13. <code>/hooks</code> 菜单<a class="anchor" href="#s13">#</a></h2>
+    <p><code>recovered/src/components/hooks/*</code> 显示这个快照里的 <code>/hooks</code> 菜单主要是只读浏览器：选择 event、查看 matcher、查看 hook 详情、统计来源（user/project/local/plugin/session/builtin）；如果 hooks 被禁用或 managed-only 会显示提示。修改/新增/删除不在菜单里做，UI 文案提示编辑 <code>settings.json</code> 或让 Claude 帮你改。</p>
+
+    <h2 id="s14">14. 常见妙用模式<a class="anchor" href="#s14">#</a></h2>
+    <h3>14.1 安全拦截</h3>
+    <ul>
+      <li><code>PreToolUse</code> + <code>matcher: "Bash"</code> + <code>if: "Bash(rm *)"</code>。</li>
+      <li>对 <code>.env</code> / SSH key / production config 的 <code>Read</code>、<code>Edit</code>、<code>Write</code> 做 deny。</li>
+      <li>对 <code>git push --force</code>、<code>npm publish</code>、<code>terraform apply</code> 强制 ask。</li>
+    </ul>
+    <h3>14.2 自动修正输入</h3>
+    <p><code>PreToolUse</code> 返回 <code>updatedInput</code>，给命令注入 env、修正路径、追加 dry-run、替换危险参数。比阻断后让模型重试更平滑，模型甚至可以不知道输入被修正。</p>
+    <h3>14.3 自动格式化与反馈</h3>
+    <p><code>PostToolUse</code> 匹配 <code>Edit|Write</code>，运行 prettier/eslint/go fmt。若格式化失败，返回 <code>additionalContext</code> 或 exit 2，让 Claude 继续修复。</p>
+    <h3>14.4 完成前验收</h3>
+    <p><code>Stop</code> prompt hook 检查“是否修改了测试但没运行测试”；<code>Stop</code> agent hook 读取 transcript 与 git diff 确认 checklist；<code>SubagentStop</code> 对子代理产物做独立验收。</p>
+    <h3>14.5 会话启动上下文</h3>
+    <p><code>SessionStart</code> 拉取 git status、近期 issue、CI 状态返回 <code>additionalContext</code>；返回 <code>initialUserMessage</code> 可自动引导第一步。</p>
+    <h3>14.6 企业集中审计</h3>
+    <p>HTTP hook 将 <code>PreToolUse</code>、<code>PermissionRequest</code>、<code>ConfigChange</code>、<code>InstructionsLoaded</code> 发到中央服务，用 allowlist 与 env allowlist 控制出网和 secret 暴露。</p>
+    <h3>14.7 reactive environment</h3>
+    <p><code>CwdChanged</code> + <code>FileChanged</code> 模拟 direnv：目录变化或 <code>.envrc</code> 改动后更新 <code>CLAUDE_ENV_FILE</code>。适合 monorepo 每个 package 自动切 node/python toolchain。</p>
+
+    <h2 id="s15">15. 实践建议<a class="anchor" href="#s15">#</a></h2>
+    <ol>
+      <li>能用 matcher/if 缩小范围就不要写大而全 hook。糟糕 scope 会让 agent 明显变慢。</li>
+      <li>阻断类逻辑保持同步；日志/通知/备份用 async。</li>
+      <li>多 hook 并发执行，不要依赖数组顺序；有顺序依赖写 dispatcher。</li>
+      <li>对 PreToolUse 的 allow 不要误解为最高权限；源码仍让 settings deny/ask 规则覆盖。</li>
+      <li>HTTP hook 必配 URL allowlist 和 env allowlist，避免项目 hook 外发敏感信息。</li>
+      <li>Stop hook 要利用 <code>stop_hook_active</code> 防止无限“继续工作”。</li>
+      <li>PostToolUse 已经在副作用之后，适合反馈和补救，不适合防护灾难动作；防护应放 PreToolUse/PermissionRequest。</li>
+      <li>对昂贵检查优先用 <code>if</code>（如 <code>Bash(npm run deploy*)</code>），而不是在每个 Bash 调用里启动脚本后再判断。</li>
+      <li>写 JSON 输出时一定包含正确的 <code>hookSpecificOutput.hookEventName</code>，源码会做事件名校验。</li>
+      <li>command hook stdout 若以 <code>{</code> 开头但不是合法 hook JSON，会被当作 JSON validation error；普通文本输出不要以 <code>{</code> 开头。</li>
+    </ol>
+
+    <h2 id="s16">16. 与官方/社区资料对照<a class="anchor" href="#s16">#</a></h2>
+    <p>本次 web search 参考：</p>
+    <ul>
+      <li>官方 Hooks reference：<code>https://code.claude.com/docs/en/hooks</code>。确认 hook 是 shell/HTTP/LLM prompt，在生命周期事件触发；确认 command hook stdin、HTTP hook POST body、matcher 模式、MCP tool 命名、exit code 2 阻断等机制。事件表以 2.1.233 为准，含 <code>UserPromptExpansion</code>、<code>PostToolBatch</code>、<code>DirectoryAdded</code>、<code>MessageDisplay</code>。</li>
+      <li>社区文章 <code>claudefa.st</code>：强调 exit code 2 是主要控制工具；PostToolUse 不能撤销副作用；HTTP hook/async hook 的适用边界。</li>
+      <li>社区文章 <code>claudelog.com</code>：强调 hook scope 很关键；提到 PreToolUse input modification 的用法，如自动加 dry-run、路径修正、参数校验。</li>
+    </ul>
+    <p>事件列表以 2.1.233-appjs 的 <code>hook-events.txt</code> 为准。recovered 快照少了部分后来加上的事件。</p>
+
+    <nav class="page-nav">
+      <a class="prev" href="./services-integrations.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">服务与外部集成</span>
+      </a>
+      <a class="next" href="./context-compact-checkpoint.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">上下文、压缩与 checkpoint</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

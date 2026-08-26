@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Team / Swarm 底层原理 · Claude Code 源码笔记</title>
+<meta name="description" content="多代理团队如何通信、执行与协作:文件锁 mailbox、消息类型协议、两个 poller、in-process runner 执行循环、任务认领、权限/计划/关闭协商。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>机制专题<span class="sep">/</span>Agent Team 原理</div>
+  <header class="page-head">
+    <span class="eyebrow">机制专题 · 11</span>
+    <h1>Agent Team / Swarm 底层原理</h1>
+    <p class="lead">多个 agent 如何通信、执行与协作。核心是把文件系统当 IPC:团队配置、收件箱、权限、任务都是 <code>~/.claude/teams/{team}/</code> 下的 JSON 文件 + 文件锁。</p>
+  </header>
+
+  <div class="prose">
+    <div class="callout">
+      <span class="callout-title">一句话结论</span>
+      <p>Claude Code 的「team」<strong>不用消息总线、不用 RPC、不用共享内存</strong>,而是把<strong>文件系统当成 IPC 层</strong>。不管队友是同进程、不同 tmux 进程、还是跨机器,通信模型完全一致。协作的本质 = 带 <code>type</code> 字段的 JSON 消息丢进对方收件箱 + 各自轮询路由。2.1.178 起 <code>TeamCreate</code>/<code>TeamDelete</code> 已移除，会话隐式成团。本文是对<a href="./enterprise-patterns.html">企业级模式</a>第 35 节的深度展开。</p>
+    </div>
+
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>三种「多 agent」形态</a></li>
+        <li><a href="#s2"><span class="num">2</span>身份系统:name@team</a></li>
+        <li><a href="#s3"><span class="num">3</span>团队文件:共享状态源</a></li>
+        <li><a href="#s4"><span class="num">4</span>通信层:文件锁 mailbox</a></li>
+        <li><a href="#s5"><span class="num">5</span>收发与唤醒:两个 poller</a></li>
+        <li><a href="#s6"><span class="num">6</span>执行层:in-process runner</a></li>
+        <li><a href="#s7"><span class="num">7</span>协作协议(四种)</a></li>
+        <li><a href="#s8"><span class="num">8</span>并发与安全细节</a></li>
+        <li><a href="#s9"><span class="num">9</span>端到端时序</a></li>
+        <li><a href="#s10"><span class="num">10</span>关键文件索引</a></li>
+        <li><a href="#s11"><span class="num">11</span>设计哲学</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. 先分清三种「多 agent」形态<a class="anchor" href="#s1">#</a></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>形态</th><th>入口</th><th>生命周期</th><th>上下文</th><th>用途</th></tr></thead>
+      <tbody>
+        <tr><td>普通 subagent</td><td><code>AgentTool</code> → <code>runAgent.ts</code></td><td>一次性,跑完即返回</td><td>全新</td><td>"帮我查一下 X"</td></tr>
+        <tr><td>fork subagent</td><td>省略 <code>subagent_type</code></td><td>一次性,async</td><td>继承父消息前缀(命中 prompt cache)</td><td>并行干同类活</td></tr>
+        <tr><td><strong>teammate / swarm</strong></td><td>隐式团队 + <code>Agent</code>（<code>name</code>）</td><td><strong>长期存活</strong>,多轮、可通信</td><td>独立,靠 mailbox/task 协调</td><td>真正的「团队协作」</td></tr>
+      </tbody>
+    </table></div>
+    <p>只有第三种是 "team"。teammate 又有两种<strong>执行后端</strong>(<code>utils/swarm/backends/types.ts</code>):</p>
+    <ul>
+      <li><code>in-process</code>:同一个 Node 进程内,用 <code>AsyncLocalStorage</code> 隔离身份。</li>
+      <li><code>tmux</code> / <code>iterm2</code>(pane-based):每个队友是一个<strong>独立的 <code>claude</code> 子进程</strong>,跑在终端分屏里。</li>
+    </ul>
+    <p>抽象成两个接口:<code>PaneBackend</code>(管分屏:create/kill/hide/show pane)与 <code>TeammateExecutor</code>(管生命周期:spawn/sendMessage/terminate/kill)。</p>
+
+    <h2 id="s2">2. 身份系统:<code>name@team</code><a class="anchor" href="#s2">#</a></h2>
+    <p>agentId 是确定性的:<code>formatAgentId(name, team)</code> → 例如 <code>researcher@my-team</code>、<code>team-lead@my-team</code>。解析身份有<strong>三级优先级</strong>(<code>utils/teammate.ts</code>):</p>
+    <pre><code>AsyncLocalStorage(in-process 队友)
+  &gt; dynamicTeamContext(tmux 队友, 来自 CLI args)
+  &gt; env var</code></pre>
+    <p>一个关键设计:<strong>leader 故意不设 <code>CLAUDE_CODE_AGENT_ID</code></strong>。因为 <code>isTeammate()</code> 靠 agentId 判定,leader 没有它 → <code>isTeammate()=false</code> → 不会去轮询自己的收件箱、不会被当成 worker。<code>isSwarmWorker()</code> = 有 team + 有 agentId + 不是 leader。</p>
+
+    <h2 id="s3">3. 团队文件:唯一的共享状态源<a class="anchor" href="#s3">#</a></h2>
+    <p><code>~/.claude/teams/{team}/config.json</code>,结构见 <code>teamHelpers.ts</code>:</p>
+    <pre><code>TeamFile {
+  leadAgentId, leadSessionId,        // 谁是 leader
+  members: [{ agentId, name, tmuxPaneId, cwd, worktreePath,
+              backendType, isActive, mode, subscriptions, ... }],
+  teamAllowedPaths,                  // 全队免问可编辑的目录
+  hiddenPaneIds
+}</code></pre>
+    <ul>
+      <li><strong>Team = Project = TaskList</strong>。建 team 时 <code>resetTaskList()</code>,任务编号从 1 开始。</li>
+      <li>一个 leader <strong>只能管一个 team</strong>;重名自动生成 word slug。</li>
+      <li><strong>只有 leader 写 team file</strong>(成员增删、改 mode);teammate 只读 + 改自己那条(<code>syncTeammateMode</code>)。</li>
+      <li>session 结束自动清理(<code>cleanupSessionTeams</code>);SIGINT 时<strong>先 kill 分屏再删目录</strong>,否则会留下孤儿子进程。</li>
+    </ul>
+
+    <h2 id="s4">4. 通信层:文件锁 mailbox<a class="anchor" href="#s4">#</a></h2>
+    <p>每个队友一个收件箱:<code>~/.claude/teams/{team}/inboxes/{name}.json</code>,是一个消息数组(<code>teammateMailbox.ts</code>)。</p>
+    <p><strong>写入为什么要文件锁</strong>(<code>writeToMailbox</code>):多个 Claude 进程可能同时给同一个人写信。流程是:</p>
+    <pre><code>先 writeFile('[]', flag:'wx')   // 确保文件存在(proper-lockfile 要求)
+→ lockfile.lock(retry 10次, 5~100ms backoff)
+→ 重新读取(拿最新状态)
+→ push 新消息
+→ 写回
+→ release</code></pre>
+    <p>旧的 <code>lockSync</code> 会阻塞事件循环,所以改成 async + 显式 retry 来达到同样的串行化语义。标记已读 <code>markMessagesAsRead</code> 同样加锁。</p>
+    <p><strong>消息是带类型的 JSON</strong>——一个 inbox 承载十几种协议(<code>isStructuredProtocolMessage</code>):</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>消息 type</th><th>方向</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>(纯文本)</td><td>任意</td><td>队友/leader 间对话,喂给模型</td></tr>
+        <tr><td><code>idle_notification</code></td><td>worker→leader</td><td>"我闲下来了"</td></tr>
+        <tr><td><code>permission_request/response</code></td><td>worker↔leader</td><td>工具权限审批</td></tr>
+        <tr><td><code>sandbox_permission_*</code></td><td>worker↔leader</td><td>沙箱网络访问审批</td></tr>
+        <tr><td><code>plan_approval_*</code></td><td>worker↔leader</td><td>计划审批</td></tr>
+        <tr><td><code>shutdown_request/approved/rejected</code></td><td>双向</td><td>关闭协商</td></tr>
+        <tr><td><code>task_assignment</code></td><td>leader→worker</td><td>派活</td></tr>
+        <tr><td><code>team_permission_update</code></td><td>leader→worker</td><td>广播权限规则</td></tr>
+        <tr><td><code>mode_set_request</code></td><td>leader→worker</td><td>改权限模式</td></tr>
+      </tbody>
+    </table></div>
+    <p>此外还有<strong>进程内内存 mailbox</strong>(<code>utils/mailbox.ts</code>:一个 <code>queue + waiters + signal</code> 的轻量原语),以及跨会话通道(2.1.88 的 <code>UDS_INBOX</code>,2.1.224 起产品化):本机 UDS inbox、跨机 Remote Control / cloud 桥。队友主线仍走 file-based mailbox。跨会话按名字路由、inbound hold、权限洗钱防护见<a href="./cross-session-messaging.html">跨会话 SendMessage</a>。</p>
+
+    <h2 id="s5">5. 收发与「唤醒」:两个 poller<a class="anchor" href="#s5">#</a></h2>
+    <p>谁去读收件箱、怎么把消息变成模型的一个新 turn——这是协作的关键。<strong>两套机制</strong>,按角色分流(<code>getAgentNameToPoll</code>):</p>
+    <h3>(A) leader 和 tmux 队友 → <code>useInboxPoller</code>(React hook, 1s 轮询)</h3>
+    <pre><code>读 unread → 按 type 分桶(权限/沙箱/shutdown/plan/modeSet/regular)
+  ├─ 协议消息: 路由到对应 handler(见第 7 节)
+  └─ regular 对话消息:
+       idle → 立即 onSubmitMessage() 当成新 turn
+       busy → 进 AppState.inbox 队列, 等本轮结束再投递
+标记已读 ← 放在"投递成功 / 可靠入队之后"(崩溃重读, 不丢消息)</code></pre>
+    <p>消息以 <code>&lt;teammate-message teammate_id=.. color=.. summary=..&gt;</code> XML 包裹喂给模型。</p>
+    <h3>(B) in-process 队友 → <code>waitForNextPromptOrShutdown</code>(500ms poll)</h3>
+    <p>in-process 队友<strong>不能</strong>用 <code>useInboxPoller</code>(它和 leader 共享同一个 React context / AppState,会串)。它自己 poll,且有明确的<strong>优先级防饿死</strong>:</p>
+    <pre><code>1. task.pendingUserMessages   (用户从 transcript 视图直接注入)
+2. shutdown_request           (最高优先, 防被普通消息淹没)
+3. team-lead 的消息            (代表用户意图 / 协调, 优先于队友闲聊)
+4. 其它消息 FIFO
+5. 都没有 → 去任务清单认领下一个任务(tryClaimNextTask)</code></pre>
+
+    <h2 id="s6">6. 执行层:in-process runner 的 agent loop<a class="anchor" href="#s6">#</a></h2>
+    <p><code>runInProcessTeammate</code>(<code>inProcessRunner.ts</code>)是核心。它<strong>复用和普通 subagent 完全相同的 <code>runAgent()</code></strong>(内部调 <code>query()</code>),只是包了一层持续循环:</p>
+    <pre><code>spawnInProcessTeammate:
+  - 独立 AbortController(leader 的 query 被中断时, 队友不死)
+  - TeammateContext 存进 AsyncLocalStorage
+  - 注册 InProcessTeammateTaskState 到 AppState.tasks
+
+runInProcessTeammate(while !abort &amp;&amp; !shutdown):
+  runWithTeammateContext(ctx, () =&gt;        ← 身份隔离
+    runWithAgentContext(...) =&gt;            ← analytics 归因
+      for await (msg of runAgent({ ... }))  ← 真正的模型循环
+  一轮结束 → 标记 isIdle → 发 idle_notification 给 leader
+  → waitForNextPromptOrShutdown() 等下一个 prompt
+  → 拿到就当新 prompt 继续循环</code></pre>
+    <p>执行层的几个硬细节:</p>
+    <ul>
+      <li><strong>系统提示</strong> = 主 agent prompt + <code>TEAMMATE_SYSTEM_PROMPT_ADDENDUM</code>(明确告诉模型:"光写文字队友看不到,<strong>必须用 SendMessage</strong>")。</li>
+      <li><strong>强制注入团队工具</strong>：即使 agent 限制了 tools，也会塞回 <code>SendMessage</code> 和任务相关工具。<code>TeamCreate</code>/<code>TeamDelete</code> 已不在。</li>
+      <li><strong><code>permissionMode</code> 强制 <code>default</code></strong>:队友总是拿到完整工具集,不继承 leader 的受限模式。</li>
+      <li><strong>双层 abort</strong>:lifecycle controller(杀整个队友) vs per-turn <code>currentWorkAbortController</code>(Escape 只停当前轮,队友继续活)。</li>
+      <li>累积 <code>allMessages</code> 当 <code>forkContextMessages</code> 保持跨轮历史;超阈值<strong>用隔离 context 自动 compact</strong>(不污染主会话的 <code>readFileState</code> / UI)。</li>
+      <li><strong>队友绝不自动把回复发给 leader</strong>——必须显式 SendMessage(与 tmux 队友行为一致)。</li>
+    </ul>
+    <p>pane 队友则不同:<code>spawn</code> 一个真正的 <code>claude</code> 子进程到 tmux / iTerm2 分屏,身份靠 CLI args(<code>--agent-id</code>)+ 环境变量(<code>CLAUDE_CODE_AGENT_COLOR</code>、<code>CLAUDE_CODE_PLAN_MODE_REQUIRED</code>)传递。</p>
+
+    <h2 id="s7">7. 协作协议(四种)<a class="anchor" href="#s7">#</a></h2>
+    <h3>① 任务认领(去中心化工作拉取)</h3>
+    <p>leader 建任务清单,队友 idle 时自己 <code>tryClaimNextTask</code>:挑 <code>pending &amp;&amp; 无 owner &amp;&amp; blockedBy 全完成</code> 的任务,<code>claimTask</code> 抢占 + 设 <code>in_progress</code>。这是<strong>工作窃取</strong>模型,不是 leader 主动派发。</p>
+    <h3>② 权限审批(worker → leader)</h3>
+    <ul>
+      <li><strong>in-process(优先)</strong>:通过 <code>leaderPermissionBridge</code> 直接复用 leader 的 <code>ToolUseConfirmQueue</code>,弹出和 leader 自己工具<strong>一模一样</strong>的权限 UI(带 <code>workerBadge</code> 标明是哪个队友);批准的 <code>permissionUpdates</code> 写回 leader 共享 context(<code>preserveMode:true</code> 防 acceptEdits 泄漏)。</li>
+      <li><strong>mailbox(tmux worker / bridge 不可用时)</strong>:worker 先试 bash classifier 自动批准 → 否则 <code>registerPermissionCallback</code>(<strong>先注册防竞态</strong>)→ <code>sendPermissionRequestViaMailbox</code> → <code>useSwarmPermissionPoller</code> 500ms 轮询自己 inbox 等响应。leader 端 <code>useInboxPoller</code> 收到请求塞进 ToolUseConfirmQueue → 用户决定 → <code>sendPermissionResponseViaMailbox</code> 回信。<code>createResolveOnce/claim</code> 保证只 resolve 一次。</li>
+    </ul>
+    <p>还保留了<strong>老的 file-based 双目录</strong>机制(<code>permissionSync.ts</code>):<code>permissions/pending/{id}.json</code> 与 <code>resolved/{id}.json</code>,目录级 <code>.lock</code>,resolve 时把文件从 pending 移到 resolved,<code>cleanupOldResolutions</code> 1 小时清理。</p>
+    <h3>③ Plan 审批</h3>
+    <p>队友 <code>planModeRequired</code> 时,ExitPlanMode 不弹本地 UI,而是发 <code>plan_approval_request</code> 给 leader。leader 的 <code>useInboxPoller</code> <strong>自动批准</strong>并回 <code>plan_approval_response</code>(带继承的 mode,plan→default)。队友收到时<strong>校验必须来自 <code>team-lead</code></strong>(防伪造)才退出 plan mode。</p>
+    <h3>④ Shutdown 生命周期</h3>
+    <p>leader 发 <code>shutdown_request</code>(<strong>不自动批准,交给队友的模型决定</strong>)→ 队友模型用 <code>SendMessage</code> 回 approve/reject:approve 时 in-process → abort controller,pane → kill pane / <code>gracefulShutdown</code>,并回 <code>shutdown_approved</code>;leader 收到 approved → killPane + 从 team file / teamContext 移除 + <code>unassignTeammateTasks</code> + 标记 task completed。队友干完活变 <strong>idle 但不退出</strong>,持续等新任务 / 消息——这是它和一次性 background task 的本质区别。</p>
+
+    <h2 id="s8">8. 并发与安全的硬核细节<a class="anchor" href="#s8">#</a></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>问题</th><th>解法</th><th>位置</th></tr></thead>
+      <tbody>
+        <tr><td>多进程并发写 inbox</td><td>proper-lockfile + retry backoff</td><td><code>teammateMailbox.ts</code></td></tr>
+        <tr><td>同进程多队友身份串号</td><td><code>AsyncLocalStorage</code> 隔离</td><td><code>teammateContext.ts</code></td></tr>
+        <tr><td>leader 中断误杀队友</td><td>队友独立 AbortController</td><td><code>spawnInProcess.ts</code></td></tr>
+        <tr><td>Escape 误杀整个队友</td><td>per-turn work controller</td><td><code>inProcessRunner.ts</code></td></tr>
+        <tr><td>权限多路响应重复执行</td><td><code>createResolveOnce/claim</code></td><td><code>swarmWorkerHandler.ts</code></td></tr>
+        <tr><td>崩溃丢消息</td><td>标记已读放在投递成功后</td><td><code>useInboxPoller.ts</code></td></tr>
+        <tr><td>普通消息淹没 shutdown</td><td>shutdown 优先 + leader 消息优先</td><td><code>inProcessRunner.ts</code></td></tr>
+        <tr><td>旧版/恶意队友注入坏权限</td><td><code>permissionUpdates</code> schema 校验过滤</td><td><code>useSwarmPermissionPoller.ts</code></td></tr>
+        <tr><td>队友伪造 plan/mode 批准</td><td>校验 <code>from === 'team-lead'</code></td><td><code>useInboxPoller.ts</code></td></tr>
+        <tr><td>跨机消息 prompt 注入</td><td><code>safetyCheck</code>(bypass-immune)</td><td><code>SendMessageTool.ts</code></td></tr>
+      </tbody>
+    </table></div>
+
+    <h2 id="s9">9. 端到端时序(in-process 队友干一个需要权限的活)<a class="anchor" href="#s9">#</a></h2>
+    <pre><code>leader: 会话隐式成团 → Agent(name=…) 拉队友 → resetTaskList
+leader: Agent(name=researcher, team_name=..) → spawnInProcessTeammate
+         → 独立 AbortController + AsyncLocalStorage ctx + AppState.task
+         → startInProcessTeammate(fire-and-forget)
+researcher: runAgent 循环 → 调 Bash(需权限)
+         → createInProcessCanUseTool 命中 'ask'
+         → leaderPermissionBridge 把请求塞进 leader 的 ToolUseConfirmQueue
+leader UI: 弹出带 [researcher] 徽章的权限框 → 用户 Allow
+         → permissionUpdates 写回 leader 共享 context
+researcher: 拿到 allow, 继续执行 → 完成本轮 → isIdle=true
+         → 写 idle_notification 到 leader 收件箱
+leader: useInboxPoller(1s) 读到 → 作为新 turn 投给模型
+         → 模型决定下一步, 或 SendMessage 派下一个任务
+researcher: waitForNextPromptOrShutdown 收到新 prompt / 或自己 claimTask
+         → 继续循环……
+leader: 活干完 → SendMessage(shutdown_request)
+researcher: 模型决定 approve → abort + 回 shutdown_approved
+leader: 收到 → 从 team file 移除 + 标记 task completed</code></pre>
+
+    <h2 id="s10">10. 关键文件索引<a class="anchor" href="#s10">#</a></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>关注点</th><th>文件</th></tr></thead>
+      <tbody>
+        <tr><td>团队文件 / 成员管理</td><td><code>utils/swarm/teamHelpers.ts</code></td></tr>
+        <tr><td>拉队友</td><td>Agent 工具的 <code>name</code>（隐式成团）</td></tr>
+        <tr><td>身份解析</td><td><code>utils/teammate.ts</code>、<code>utils/teammateContext.ts</code></td></tr>
+        <tr><td>文件锁 mailbox + 消息类型</td><td><code>utils/teammateMailbox.ts</code></td></tr>
+        <tr><td>进程内内存 mailbox</td><td><code>utils/mailbox.ts</code></td></tr>
+        <tr><td>执行后端抽象</td><td><code>utils/swarm/backends/types.ts</code></td></tr>
+        <tr><td>in-process 启动 / kill</td><td><code>utils/swarm/spawnInProcess.ts</code></td></tr>
+        <tr><td>in-process 执行循环</td><td><code>utils/swarm/inProcessRunner.ts</code></td></tr>
+        <tr><td>发消息工具</td><td><code>tools/SendMessageTool/SendMessageTool.ts</code></td></tr>
+        <tr><td>leader / tmux 轮询器</td><td><code>hooks/useInboxPoller.ts</code></td></tr>
+        <tr><td>worker 权限轮询器</td><td><code>hooks/useSwarmPermissionPoller.ts</code></td></tr>
+        <tr><td>权限同步(双目录 + mailbox)</td><td><code>utils/swarm/permissionSync.ts</code></td></tr>
+        <tr><td>leader 权限桥</td><td><code>utils/swarm/leaderPermissionBridge.ts</code></td></tr>
+      </tbody>
+    </table></div>
+
+    <h2 id="s11">11. 设计哲学(值得借鉴)<a class="anchor" href="#s11">#</a></h2>
+    <ol>
+      <li><strong>用文件 + 锁做统一 IPC</strong>,抹平"同进程 / 跨进程 / 跨机器"差异。</li>
+      <li>一切协作<strong>编码成带 <code>type</code> 的消息</strong>,靠轮询路由,而非回调地狱。</li>
+      <li>队友是<strong>长生命周期 + 任务拉取</strong>,而非一次性 subagent。</li>
+      <li>权限 / 计划 / 关闭都做成<strong>可审计的异步协商协议</strong>,且对"谁能批准"做了防伪造校验。</li>
+      <li>并发安全靠<strong>文件锁 + AsyncLocalStorage + resolve-once + 已读延后</strong>这组朴素但可靠的手段,而不是复杂的分布式协议。</li>
+    </ol>
+
+    <nav class="page-nav">
+      <a class="prev" href="./skills-subagents-toolsearch.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">Skill、Subagent、ToolSearch</span>
+      </a>
+      <a class="next" href="./rewind.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">Rewind / Checkpoint 机制</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>企业级 Agent 高价值设计模式补遗 · Claude Code 源码笔记</title>
+<meta name="description" content="39 节企业级 agent 可借鉴模式（2.1.233）：远程托管策略、信任分层、Hooks 控制平面、SSRF 防护、sandbox、worktree、插件供应链、观测隐私、事件背压、Auto Mode classifier、swarm、prompt cache break detection 等。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>进阶<span class="sep">/</span>企业级 Agent 高价值设计模式</div>
+  <header class="page-head">
+    <span class="eyebrow">进阶 · 13</span>
+    <h1>企业级 Agent 高价值设计模式补遗</h1>
+    <p class="lead">此前文档覆盖较少、但很值得企业级 agent 借鉴的工程设计。重点不是“又有哪些功能”，而是这些功能背后的产品化 / 企业化模式。现行 slash / 工具以 2.1.233 为准。</p>
+  </header>
+
+  <div class="prose">
+
+    <div class="callout">
+      <span class="callout-title">这份补遗在补什么</span>
+      <p>把 demo agent 推向生产时，真正的难点不在主功能，而在治理、隔离、安全边界、观测与长期运行。本文用 39 节把 Claude Code 里这类"非核心路径但决定能不能落地"的设计抽出来，按<strong>治理 / 执行 / 协作 / 运维</strong>四层组织，每节末尾给出可迁移的借鉴点。相关阅读：<a href="./services-integrations.html">服务与外部集成</a>、<a href="./permissions.html">权限审核机制</a>、<a href="./runtime-stability.html">长运行兜底与稳定性</a>、<a href="./skills-subagents-toolsearch.html">Skill、Subagent、ToolSearch</a>。</p>
+    </div>
+
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>企业策略不是配置文件，而是运行时治理平面</a></li>
+        <li><a href="#s2"><span class="num">2</span>设置加载有明确的信任分层</a></li>
+        <li><a href="#s3"><span class="num">3</span>Hooks 是企业集成控制平面</a></li>
+        <li><a href="#s4"><span class="num">4</span>HTTP Hook 的 SSRF / 密钥外泄防护</a></li>
+        <li><a href="#s5"><span class="num">5</span>Sandbox 是 OS 级隔离</a></li>
+        <li><a href="#s6"><span class="num">6</span>Worktree 是变更隔离与可回滚执行环境</a></li>
+        <li><a href="#s7"><span class="num">7</span>插件生态有企业供应链治理</a></li>
+        <li><a href="#s8"><span class="num">8</span>观测系统区分调试、遥测、隐私和火焰图</a></li>
+        <li><a href="#s9"><span class="num">9</span>远程 / SDK 事件传输有背压与有界丢弃</a></li>
+        <li><a href="#s10"><span class="num">10</span>文件状态缓存是正确性机制</a></li>
+        <li><a href="#s11"><span class="num">11</span>凭证与远程桥接考虑真实部署约束</a></li>
+        <li><a href="#s12"><span class="num">12</span>最值得抽象出来的设计原则</a></li>
+        <li><a href="#s13"><span class="num">13</span>Team Memory 上传前本地 secret scanning</a></li>
+        <li><a href="#s14"><span class="num">14</span>Prompt Suggestion + Speculation 预测执行</a></li>
+        <li><a href="#s15"><span class="num">15</span>LSP 是异步诊断输入通道</a></li>
+        <li><a href="#s16"><span class="num">16</span>Cron / Scheduled Tasks 调度治理</a></li>
+        <li><a href="#s17"><span class="num">17</span>企业网络层：proxy、mTLS、CA、privacy</a></li>
+        <li><a href="#s18"><span class="num">18</span>Model governance：allowlist 与 override</a></li>
+        <li><a href="#s19"><span class="num">19</span>MCP 与 marketplace policy 门禁</a></li>
+        <li><a href="#s20"><span class="num">20</span>Shell 长任务治理</a></li>
+        <li><a href="#s21"><span class="num">21</span>Plan Mode 是审批工作流</a></li>
+        <li><a href="#s22"><span class="num">22</span>多进程 / 远程生命周期治理</a></li>
+        <li><a href="#s23"><span class="num">23</span>这轮追加后更完整的借鉴清单</a></li>
+        <li><a href="#s24"><span class="num">24</span>AutoDream：后台 memory consolidation</a></li>
+        <li><a href="#s25"><span class="num">25</span>Magic Docs：被动触发的自动文档维护</a></li>
+        <li><a href="#s26"><span class="num">26</span>Auto Mode classifier：模型做权限裁决</a></li>
+        <li><a href="#s27"><span class="num">27</span>Remote Session：WS 控制面 + HTTP 数据面</a></li>
+        <li><a href="#s28"><span class="num">28</span>Computer Use：桌面自动化的系统级细节</a></li>
+        <li><a href="#s29"><span class="num">29</span>Commit / PR attribution</a></li>
+        <li><a href="#s30"><span class="num">30</span>WebFetch 的网络安全边界</a></li>
+        <li><a href="#s31"><span class="num">31</span>Ripgrep / Grep 的资源治理与安全兜底</a></li>
+        <li><a href="#s32"><span class="num">32</span>File Persistence 与 Teleport Git Bundle</a></li>
+        <li><a href="#s33"><span class="num">33</span>Output Styles：可治理的 prompt 插件</a></li>
+        <li><a href="#s34"><span class="num">34</span>Frontmatter Hooks：自带治理逻辑</a></li>
+        <li><a href="#s35"><span class="num">35</span>Agent Swarm：团队、任务与权限同步</a></li>
+        <li><a href="#s36"><span class="num">36</span>Resume / Recovery：从坏 transcript 恢复</a></li>
+        <li><a href="#s37"><span class="num">37</span>Prompt Cache Break Detection</a></li>
+        <li><a href="#s38"><span class="num">38</span>QueryGuard：防异步缝隙双查询</a></li>
+        <li><a href="#s39"><span class="num">39</span>这轮新增后的生产化主题</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. 企业策略不是配置文件，而是运行时治理平面<a class="anchor" href="#s1">#</a></h2>
+    <p><strong>相关源码：</strong><code>services/remoteManagedSettings/index.ts</code> · <code>securityCheck.tsx</code> · <code>syncCache.ts</code> · <code>services/policyLimits/index.ts</code> · <code>utils/settings/settings.ts</code> · <code>utils/managedEnv.ts</code></p>
+    <p>Claude Code 的企业策略分两类：<strong>remote managed settings</strong>（远端托管设置，可下发完整 <code>SettingsJson</code>）和 <strong>policy limits</strong>（组织级能力开关 / 限制）。几个值得学习的点：</p>
+    <ul>
+      <li><strong>fail open + stale cache</strong>：远端设置 / 策略拉取失败时不让 CLI 不可用；有本地缓存用旧缓存，没有也继续运行。</li>
+      <li><strong>ETag/checksum 缓存</strong>：本地对 settings/restrictions 做稳定 JSON 排序并算 <code>sha256:</code> checksum，用 <code>If-None-Match</code> 降流量。</li>
+      <li><strong>后台轮询</strong>：初始加载后每小时 polling，让策略在长会话中也能生效。</li>
+      <li><strong>加载 promise 有超时</strong>：<code>initializeRemoteManagedSettingsLoadingPromise()</code>、<code>initializePolicyLimitsLoadingPromise()</code> 都有 30 秒兜底，避免某些 SDK/测试路径永远等待。</li>
+      <li><strong>危险设置需要交互确认</strong>：<code>checkManagedSettingsSecurity()</code> 检测新下发设置是否含 dangerous settings，交互模式下展示阻塞弹窗，拒绝则退出。</li>
+      <li><strong>部分策略 fail closed</strong>：<code>policyLimits</code> 默认 unknown/unavailable 为 allowed，但在 essential-traffic-only 场景下，<code>allow_product_feedback</code> 缓存缺失会 fail closed，避免高隐私组织因网络失败误开启非必要流量。</li>
+    </ul>
+    <p>这体现了一个企业级原则：<strong>控制平面必须可远程管理，但不能因为控制平面故障把本地执行平面拖死；只有合规 / 隐私红线例外 fail closed。</strong></p>
+
+    <h2 id="s2">2. 设置加载有明确的信任分层<a class="anchor" href="#s2">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/managedEnv.ts</code> · <code>utils/settings/settings.ts</code> · <code>types.ts</code> · <code>pluginOnlyPolicy.ts</code></p>
+    <p><code>managedEnv.ts</code> 把环境变量应用分成两阶段：</p>
+    <ol>
+      <li><strong>trust 前</strong>：只应用用户级、flag、policy 等可信来源的 env；项目级 <code>.claude/settings.json</code>、local settings 只能应用 <code>SAFE_ENV_VARS</code> allowlist。</li>
+      <li><strong>trust 后</strong>：工作区被信任后才完整应用 settings env，包括可能危险的 <code>PATH</code>、<code>LD_PRELOAD</code>、provider/base URL 等。</li>
+    </ol>
+    <p>还有一些很细的防线：</p>
+    <ul>
+      <li><code>withoutSSHTunnelVars()</code>：<code>claude ssh</code> 场景下 settings.env 不能覆盖 SSH tunnel 认证相关 env。</li>
+      <li><code>withoutHostManagedProviderVars()</code>：宿主声明 provider 由 host 管理时，用户 / project settings 不能重定向模型 provider。</li>
+      <li>CCD/desktop 场景捕获 spawn env keys，避免 settings 覆盖 host 用于 JSON-RPC/OTel 的运行变量。</li>
+      <li><code>settings.ts</code> 对 policySettings 用 "first source wins"：remote &gt; MDM/HKLM/plist &gt; managed-settings.json/drop-ins &gt; HKCU。</li>
+      <li>managed file 支持 <code>managed-settings.d/*.json</code> drop-in，按文件名排序合并，方便企业不同团队分发独立策略片段。</li>
+      <li>schema 强调 backward compatibility：新增字段必须 optional，不能随便收紧类型；无效字段尽量保留，避免自动写回破坏用户配置。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>企业 agent 的 settings 不是简单 merge JSON，而要显式回答：谁能在 trust 前影响进程？谁能覆盖 provider？谁的策略不可被项目覆盖？配置错误时是丢弃、保留还是阻断？</p>
+
+    <h2 id="s3">3. Hooks 是企业集成控制平面，不只是回调脚本<a class="anchor" href="#s3">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/hooks.ts</code> · <code>hooksConfigManager.ts</code> · <code>execHttpHook.ts</code> · <code>execPromptHook.ts</code> · <code>execAgentHook.ts</code> · <code>sessionHooks.ts</code> · <code>hookEvents.ts</code> · <code>fileChangedWatcher.ts</code></p>
+    <p>此前文档提到 hooks，但没充分展开。继续读源码后可以看到 hooks 已经是一套完整控制平面。</p>
+    <h3>事件面非常完整</h3>
+    <p>2.1.233 制品 <code>hook-events.txt</code> 有 31 个事件：</p>
+    <ul>
+      <li>tool 生命周期：<code>PreToolUse</code>、<code>PostToolUse</code>、<code>PostToolUseFailure</code>、<code>PostToolBatch</code></li>
+      <li>权限：<code>PermissionRequest</code>、<code>PermissionDenied</code></li>
+      <li>会话：<code>SessionStart</code>、<code>SessionEnd</code>、<code>Setup</code>、<code>Stop</code>、<code>StopFailure</code></li>
+      <li>prompt：<code>UserPromptSubmit</code>、<code>UserPromptExpansion</code></li>
+      <li>展示：<code>Notification</code>、<code>MessageDisplay</code></li>
+      <li>subagent：<code>SubagentStart</code>、<code>SubagentStop</code></li>
+      <li>compact：<code>PreCompact</code>、<code>PostCompact</code></li>
+      <li>MCP elicitation：<code>Elicitation</code>、<code>ElicitationResult</code></li>
+      <li>配置与指令：<code>ConfigChange</code>、<code>InstructionsLoaded</code></li>
+      <li>worktree：<code>WorktreeCreate</code>、<code>WorktreeRemove</code></li>
+      <li>环境感知：<code>CwdChanged</code>、<code>FileChanged</code>、<code>DirectoryAdded</code></li>
+      <li>team/task：<code>TeammateIdle</code>、<code>TaskCreated</code>、<code>TaskCompleted</code></li>
+    </ul>
+    <p>这说明 hooks 不只是"执行前后跑脚本"，而是让企业把 agent 纳入现有审批、审计、策略、CI、安全扫描、工单系统。</p>
+    <h3>Hook 类型不止 shell command</h3>
+    <ul>
+      <li>command/bash hook：本地 shell 执行。</li>
+      <li>HTTP hook：POST JSON 到远端策略服务。</li>
+      <li>prompt hook：用小模型做结构化判断。</li>
+      <li>agent hook：启动一个受限 hook-agent，多轮检查 transcript/codebase，要求 structured output。</li>
+      <li>session function hook：进程内 callback，临时注册，不写 settings。</li>
+    </ul>
+    <p>特别值得注意 <code>execAgentHook.ts</code>：它为 hook agent 单独构造 <code>agentId</code>，限制工具集合，禁用 thinking，使用小模型，最多 50 assistant turns，并注册 structured output enforcement。这是"用 agent 审 agent"，但有 turn cap、tool cap、structured output 和 cleanup，不会变成失控递归。</p>
+    <h3>Hook 输出是结构化治理接口</h3>
+    <p><code>utils/hooks.ts</code> 的 <code>HookResult</code>/<code>AggregatedHookResult</code> 支持：阻断 continuation；追加 system message / additional context；修改 tool input；修改 MCP tool output；对权限返回 allow/deny/ask；对 MCP elicitation 返回 accept/decline/cancel；注册动态 watch paths；对 <code>PermissionDenied</code> 提供 retry 建议。这比"stdout 作为日志"高级很多：hook 可以成为决策链路中的<strong>结构化中间件</strong>。</p>
+    <h3>Hook 自身也被安全治理</h3>
+    <ul>
+      <li>interactive 模式下所有 hooks 都要求 workspace trust；源码注释明确提到历史漏洞：拒绝 trust 后仍执行 SessionEnd hook、subagent 完成时执行 SubagentStop hook。</li>
+      <li>HTTP hook 有 URL allowlist、env var allowlist、header CR/LF/NUL 清洗、SSRF guard。</li>
+      <li>HTTP hook 用 axios <code>lookup</code> 钩子确保校验过的 IP 就是 socket 连接的 IP，减少 DNS rebinding 窗口。</li>
+      <li>sandbox 开启时 HTTP hook 走 sandbox network proxy，由 proxy 执行 domain allowlist。</li>
+      <li>hook events 有 pending buffer 上限 100，避免没有消费者时无限积累。</li>
+      <li>SessionEnd hook 默认 1.5 秒超时，避免退出时被 teardown 脚本卡死。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>如果开放 hooks，就必须同时设计事件模型、结构化返回、安全边界、超时、审计、队列和 trust gating。</p>
+
+    <h2 id="s4">4. HTTP Hook 的 SSRF / 密钥外泄防护值得单独学习<a class="anchor" href="#s4">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/hooks/execHttpHook.ts</code> · <code>utils/hooks/ssrfGuard.ts</code></p>
+    <p>HTTP hook 常见风险是项目配置把企业内网 / 云 metadata / token 打出去。Claude Code 在这里做了多层防护：</p>
+    <ul>
+      <li><code>allowedHttpHookUrls</code>：企业可配 URL allowlist；<code>undefined</code> 表示不限制，<code>[]</code> 表示全阻断。</li>
+      <li><code>httpHookAllowedEnvVars</code> + hook 自己的 <code>allowedEnvVars</code> 取交集；header 中 <code>$VAR</code> 只有在 allowlist 内才插值，否则替换为空。</li>
+      <li>header 值去掉 CR、LF、NUL，防 CRLF header injection。</li>
+      <li>默认不 follow redirect：<code>maxRedirects: 0</code>。</li>
+      <li>DNS lookup 阶段阻断 private/link-local/CGNAT/ULA 地址，尤其是 <code>169.254.169.254</code>、<code>100.64.0.0/10</code>。</li>
+      <li>IPv6 映射 IPv4 也会解析后委托到 IPv4 检查，防 <code>::ffff:a9fe:a9fe</code> 绕过。</li>
+      <li>loopback 被允许，便于本地开发策略服务。</li>
+      <li>使用 corporate/sandbox proxy 时跳过本地 SSRF guard，因为 DNS 由 proxy 做；sandbox proxy 自己执行 domain allowlist。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>hook 是集成点，同时也是数据外流点；要把 URL、DNS、header、env secrets、redirect、proxy 语义一起纳入威胁模型。</p>
+
+    <h2 id="s5">5. Sandbox 是 OS 级隔离，不只是权限弹窗补充<a class="anchor" href="#s5">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/sandbox/sandbox-adapter.ts</code> · <code>tools/BashTool/shouldUseSandbox.ts</code> · <code>bashSecurity.ts</code> · <code>tools/PowerShellTool/powershellSecurity.ts</code></p>
+    <p>权限审核解决"是否允许这个工具"，sandbox 解决"即使允许了 Bash，也把进程真实能力限制住"。关键设计：</p>
+    <ul>
+      <li>sandbox 配置由 settings/permissions 自动转换：<code>WebFetch(domain:...)</code> 变网络 allow/deny，<code>Edit/Read(path)</code> 变 filesystem allow/deny。</li>
+      <li>policy 可设 <code>allowManagedDomainsOnly</code>、<code>allowManagedReadPathsOnly</code>，强制只用管理员下发的网络 / 文件范围。</li>
+      <li>默认允许 cwd 和 Claude temp dir 写入，但显式 deny settings 文件、managed-settings drop-in、<code>.claude/skills</code> 等高权限配置入口，防止 agent 写配置实现持久化 / 提权。</li>
+      <li>对 bare git repo escape 有专门处理：检测 / deny <code>HEAD</code>、<code>objects</code>、<code>refs</code>、<code>hooks</code>、<code>config</code>，并在 sandboxed command 后 scrub 新种下的 bare-repo 文件。</li>
+      <li>worktree 场景允许主 repo <code>.git</code> 必要写入，避免破坏正常 git worktree 操作。</li>
+      <li>sandbox 初始化异步但有 <code>initializationPromise</code> 防竞态；settings 变化会动态 <code>updateConfig()</code>。</li>
+      <li>用户显式启用 sandbox 但不可用时，<code>getSandboxUnavailableReason()</code> 给出明确原因，而不是静默降级。</li>
+      <li><code>shouldUseSandbox()</code> 的 <code>excludedCommands</code> 明确标注不是安全边界；真正安全边界是 sandbox permission system。</li>
+    </ul>
+    <p>Bash/PowerShell 还有大量语言级安全分析：Bash 检测 zsh equals expansion、process substitution、<code>${}</code>/<code>$()</code>、IFS injection、unicode whitespace、mid-word <code>#</code>、zmodload/zpty/ztcp 等；PowerShell 检测 dynamic command name、encoded command、nested pwsh、download cradle、Invoke-Expression、COM、Start-Process -Verb RunAs 等，并处理 en dash/em dash/<code>/</code> 参数前缀绕过。</p>
+    <p><strong>可借鉴点：</strong>企业 agent 不能只靠 LLM 自觉或 UI 许可。高风险工具要有静态分析 + 权限规则 + OS sandbox + post-command cleanup 四层。</p>
+
+    <h2 id="s6">6. Worktree 是变更隔离与可回滚执行环境<a class="anchor" href="#s6">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/worktree.ts</code> · <code>tools/EnterWorktreeTool/EnterWorktreeTool.ts</code> · <code>ExitWorktreeTool.ts</code> · <code>utils/worktreeModeEnabled.ts</code></p>
+    <p>Worktree 不是普通 git convenience，而是 agent 执行隔离能力：</p>
+    <ul>
+      <li><code>validateWorktreeSlug()</code> 严格限制 slug：长度上限 64，拒绝 <code>.</code>/<code>..</code>、空段、绝对路径 / drive escape。</li>
+      <li>nested slug 会 flatten 成 <code>+</code>，避免 git ref D/F conflict 以及父 worktree remove 删除子 worktree。</li>
+      <li>创建新 worktree 默认设 <code>GIT_TERMINAL_PROMPT=0</code>、<code>GIT_ASKPASS=''</code>、<code>stdin: ignore</code>，避免 git fetch/credential prompt 卡死。</li>
+      <li>若本地已有 <code>origin/&lt;defaultBranch&gt;</code> ref，直接读 SHA，跳过 fetch，避免大 repo 每次 6-8 秒扫描。</li>
+      <li>支持 sparse-checkout；失败时强制 teardown，避免留下 HEAD 已存在但工作区空的半成品 worktree。</li>
+      <li>可通过 <code>WorktreeCreate</code>/<code>WorktreeRemove</code> hook 接管创建 / 删除，做到 VCS-agnostic 或企业自定义隔离环境。</li>
+      <li>进入 worktree 后更新 cwd/originalCwd、保存 worktree state、清 system prompt section、memory cache、plans cache。</li>
+      <li><code>ExitWorktreeTool</code> 只操作当前 session 通过 EnterWorktree 创建的 worktree；手工或历史 session 的 worktree 不碰。</li>
+      <li>删除前若有 uncommitted files 或新 commits，必须 <code>discard_changes: true</code>；无法可靠判断时 fail closed，拒绝删除。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>让 agent 改代码时最好不要直接污染用户工作区。worktree 模式提供了一个可审查、可保留、可清理、可失败保护的执行沙箱。</p>
+
+    <h2 id="s7">7. 插件生态有企业供应链治理<a class="anchor" href="#s7">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/plugins/pluginPolicy.ts</code> · <code>managedPlugins.ts</code> · <code>pluginBlocklist.ts</code> · <code>validatePlugin.ts</code> · <code>pluginOnlyPolicy.ts</code> · <code>pluginTelemetry.ts</code></p>
+    <ul>
+      <li><code>enabledPlugins</code> 在 policySettings 中可强制 enable/disable；<code>isPluginBlockedByPolicy()</code> 是安装、启用、UI 过滤的统一 truth。</li>
+      <li><code>getManagedPluginNames()</code> 标记 org policy 锁定的插件名，用户不能随意绕过。</li>
+      <li><code>strictPluginOnlyCustomization</code> 可把 skills、agents、hooks、mcp 等 customization surface 限制为 admin-trusted 来源：plugin、policySettings、built-in/bundled。</li>
+      <li>marketplace 支持 delisted plugin 检测：若设 <code>forceRemoveDeletedPlugins</code>，已下架插件会从 user/project/local scope 自动卸载并记录 flagged。</li>
+      <li>插件 manifest 校验不仅做 schema，还检查 path traversal；marketplace/source 路径中 <code>..</code> 会给出针对性提示。</li>
+      <li>plugin telemetry 采用 twin-column privacy pattern：原始名进 PII-tagged 字段，同时产出 redacted 字段；第三方名统一为 <code>third-party</code>，另用固定盐 hash 做趋势 / 去重。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>Agent 扩展生态一旦开放，就需要安装源、启用策略、下架处理、路径逃逸校验、可观测但隐私保护的遥测。</p>
+
+    <h2 id="s8">8. 观测系统区分调试、遥测、隐私和性能火焰图<a class="anchor" href="#s8">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/telemetry/sessionTracing.ts</code> · <code>events.ts</code> · <code>perfettoTracing.ts</code> · <code>pluginTelemetry.ts</code> · <code>utils/sessionFileAccessHooks.ts</code></p>
+    <ul>
+      <li>OpenTelemetry span 覆盖 interaction、LLM request、tool、tool.blocked_on_user、tool.execution、hook。</li>
+      <li>prompt 默认 redacted；只有 <code>OTEL_LOG_USER_PROMPTS</code> 明确开启才记录原文。</li>
+      <li><code>logOTelEvent()</code> 给事件加 <code>event.sequence</code>，解决单 session 内事件排序问题。</li>
+      <li>workspace host paths 只进 event，不进 metrics，避免高基数路径污染指标系统。</li>
+      <li><code>sessionTracing.ts</code> 用 <code>AsyncLocalStorage</code> 维护 interaction/tool 上下文，同时用 WeakRef + strong map + TTL 清理 orphan span，避免异常 / abort 后 span 泄漏。</li>
+      <li>Perfetto tracing 提供 Chrome Trace Event 格式，记录 agent hierarchy、API TTFT/TTLT、工具执行、用户等待时间；事件有 100000 上限，超限淘汰旧半段并插入 <code>trace_truncated</code> 标记。</li>
+      <li><code>sessionFileAccessHooks.ts</code> 通过内部 PostToolUse hook 统计 session memory、transcript、memdir/team memory 被 Read/Grep/Glob/Edit/Write 访问的情况。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>企业 agent 观测不能只打日志。应同时有链路追踪、事件序列、性能 trace、隐私开关、高基数控制、资源泄漏清理。</p>
+
+    <h2 id="s9">9. 远程 / SDK 事件传输有背压、批处理和有界丢弃<a class="anchor" href="#s9">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/messageQueueManager.ts</code> · <code>queueProcessor.ts</code> · <code>sdkEventQueue.ts</code> · <code>cli/transports/SerialBatchEventUploader.ts</code> · <code>HybridTransport.ts</code></p>
+    <ul>
+      <li>REPL 主线程 command queue 是模块级队列，不依赖 React state；React 通过 <code>useSyncExternalStore</code> 订阅 immutable snapshot。</li>
+      <li>队列有 priority：<code>now &gt; next &gt; later</code>；task notification 默认 <code>later</code>，不抢用户输入。</li>
+      <li>queue processor 单独处理 slash/bash 保证错误隔离；普通消息按 mode 批量 drain，但不同 mode 不混。</li>
+      <li>SDK event queue 只在 non-interactive/headless 模式积累，TUI 模式直接丢弃，避免永远不消费的队列增长；最大 1000。</li>
+      <li><code>SerialBatchEventUploader</code> 保证最多一个 POST in-flight，失败时把 batch 放回队首，指数退避 + jitter，支持 Retry-After 和 max queue backpressure。</li>
+      <li>有 <code>maxConsecutiveFailures</code> 时可有界丢弃坏 batch 并暴露 droppedBatchCount；否则可无限重试。</li>
+      <li>batch 按 count/bytes 切分；无法 JSON 序列化的 item 会被丢弃，否则会 poison 队头导致 flush 永远挂住。</li>
+      <li><code>HybridTransport</code> 用 WebSocket 读、HTTP POST 写；stream_event 延迟 100ms 聚合，非 stream event 会先 flush buffer 保序。</li>
+      <li>close 时给 uploader 3 秒 grace flush，但不阻塞同步 close。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>远程 agent/SDK 一定会遇到网络抖动、消费者慢、事件爆量和 DB 写冲突。需要串行写、批处理、背压、重试、坏消息隔离、关闭时 best-effort flush。</p>
+
+    <h2 id="s10">10. 文件状态缓存是正确性机制，不只是性能优化<a class="anchor" href="#s10">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/fileStateCache.ts</code> · <code>fileReadCache.ts</code> · <code>sessionFileAccessHooks.ts</code></p>
+    <p><code>FileStateCache</code> 记录文件内容、timestamp、offset/limit，以及一个很关键的 <code>isPartialView</code>：</p>
+    <div class="callout">
+      <span class="callout-title">关键约束：partial view 必须强制重读</span>
+      <p>当内容来自 CLAUDE.md 自动注入、HTML/frontmatter 被剥离、或 MEMORY.md 被截断时，模型看到的是 partial view。此时 Edit/Write 必须要求显式 Read，不能基于 partial view 直接修改。</p>
+    </div>
+    <p>这说明文件缓存不仅服务性能，也服务"模型是否真正看过完整文件"的正确性 / 安全性。另外：</p>
+    <ul>
+      <li><code>FileStateCache</code> 用 LRU + maxSize，默认 100 entries、25MB，避免大文件导致内存膨胀。</li>
+      <li>cache key normalize，避免相对 / 冗余路径导致命中不一致。</li>
+      <li><code>fileReadCache</code> 以 mtime 自动失效，减少 FileEditTool 重复读文件。</li>
+      <li>cache merge 以 timestamp 新者覆盖旧者，适合 subagent/compact/session restore 这种多缓存合并场景。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>企业 agent 的文件编辑不能只问"文件内容是什么"，还要记录内容来源是否完整、何时读取、读取范围、是否过期。</p>
+
+    <h2 id="s11">11. 凭证与远程桥接考虑了真实部署约束<a class="anchor" href="#s11">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/secureStorage/fallbackStorage.ts</code> · <code>utils/authFileDescriptor.ts</code> · <code>bridge/trustedDevice.ts</code> · <code>bridge/workSecret.ts</code></p>
+    <ul>
+      <li>secure storage 支持 primary + secondary fallback。primary 首次成功后删除 secondary；primary 失败写 secondary 时，若 primary 里有旧凭证会 best-effort 删除，避免旧 keychain 项 shadow 新 fallback 导致登录循环。</li>
+      <li>CCR 远程容器优先从文件描述符读 OAuth/API token，避免直接落盘；但 tmux/shell 子进程拿不到 pipe FD，所以成功读 FD 后会在 CCR 环境 best-effort 写入 <code>/home/claude/.claude/remote/.oauth_token</code> 等 well-known file 供子进程使用。</li>
+      <li>bridge trusted device token 有 90 天滚动过期语义，登录后立即 enroll，存 keychain；账号切换前清旧 token，避免新账号 bridge 请求携带旧账号 trusted device token。</li>
+      <li><code>workSecret.ts</code> 对 base64url secret 做 version 校验，缺字段直接抛错；<code>sameSessionId()</code> 兼容不同 tagged-id 前缀但比较底层 UUID body，解决 CCR v2 compat 中 <code>session_*</code>/<code>cse_*</code> 混用问题。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>企业远程 agent 不只是"传一个 token"。要处理 keychain/fallback、容器 / 子进程、账号切换、trusted device、高权限 remote session 以及 ID 兼容。</p>
+
+    <div class="panel" id="s12">
+      <h3>12. 最值得抽象出来的设计原则</h3>
+      <p>如果要把这些机制迁移到自己的企业级 agent，可以抽象为 8 条原则：</p>
+      <ol>
+        <li><strong>策略控制平面远程化，但执行平面可降级运行</strong>：fail open + stale cache；合规红线 fail closed。</li>
+        <li><strong>trust 前后分层</strong>：项目内配置不能在 trust 前影响 provider、PATH、token、proxy 等敏感行为。</li>
+        <li><strong>hooks 必须结构化</strong>：事件完整、返回结构化、可阻断 / 修改输入 / 追加上下文，而不是只跑脚本。</li>
+        <li><strong>开放集成点必须有反滥用设计</strong>：SSRF、env secret allowlist、header injection、timeout、event buffer cap。</li>
+        <li><strong>权限不是 sandbox，sandbox 不是权限</strong>：规则审批、语言静态分析、OS 隔离、执行后 cleanup 各司其职。</li>
+        <li><strong>代码修改要隔离环境</strong>：worktree/session state/安全删除 / 失败时保留工作成果。</li>
+        <li><strong>观测默认保护隐私</strong>：prompt redaction、高基数字段隔离、PII-tagged/raw + redacted twin、trace TTL/上限。</li>
+        <li><strong>远程事件传输要可背压</strong>：串行化、批处理、重试退避、有界队列、坏消息隔离、关闭时 graceful drain。</li>
+      </ol>
+      <p>这些部分此前文档虽零散提到，但没有作为"企业级 agent 可借鉴模式"集中展开；建议后续阅读源码时把它们与 <code>query.ts</code> 主循环、工具权限和 subagent 机制并列看待。</p>
+    </div>
+
+    <h2 id="s13">13. Team Memory 上传前做本地 secret scanning<a class="anchor" href="#s13">#</a></h2>
+    <p><strong>相关源码：</strong><code>services/teamMemorySync/secretScanner.ts</code> · <code>teamMemSecretGuard.ts</code> · <code>utils/sessionFileAccessHooks.ts</code></p>
+    <p>一个很关键的企业协作安全点：<strong>团队共享记忆在写入 / 同步前会先在本机扫描 secrets</strong>。<code>secretScanner.ts</code> 采用 gitleaks 高置信规则子集，覆盖 AWS/GCP/Azure、Anthropic/OpenAI/HuggingFace、GitHub/GitLab、Slack、NPM/PyPI、Databricks、Grafana、Sentry、Stripe、private key 等，只选 distinctive prefix、近零误报的规则。</p>
+    <ul>
+      <li>Anthropic key 前缀不是直接写死字节串，而是运行时 <code>['sk', 'ant', 'api'].join('-')</code> 拼接，避免敏感 literal 出现在 external bundle 的 excluded-string 检查里。</li>
+      <li>Go/gitleaks regex 中 JS 不支持的 <code>(?i)</code> 等语法被手工改写，保证跨运行时可用。</li>
+      <li><code>teamMemSecretGuard.ts</code> 在 FileWrite/Edit validateInput 阶段阻断，错误信息明确说明 team memory 会共享给 repo collaborators。</li>
+      <li><code>sessionFileAccessHooks.ts</code> 记录 memdir/team memory Read/Edit/Write 访问行为，并在 TEAMMEM 下通知 watcher 触发同步。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>共享记忆 / 团队知识库不是普通文件。凡是会跨用户传播的 memory，都应该在客户端本地做 secret scanning，尽量做到敏感数据不出本机。</p>
+
+    <h2 id="s14">14. Prompt Suggestion + Speculation 是安全的"预测执行"系统<a class="anchor" href="#s14">#</a></h2>
+    <p><strong>相关源码：</strong><code>services/PromptSuggestion/promptSuggestion.ts</code> · <code>services/PromptSuggestion/speculation.ts</code></p>
+    <p>它不是普通 autocomplete，而是"用户还没接受建议前，后台先跑一段 forked agent 把可能的下一步预执行出来"。企业级含金量在于它把预测执行做得很克制。</p>
+    <h3>suggestion 生成有抑制条件</h3>
+    <p><code>tryGenerateSuggestion()</code> 会在很多情况下直接 suppress：conversation 太早；上一轮是 API error；父上下文冷缓存 token 太大；有 pending permission/sandbox request；MCP elicitation 正在进行；plan mode 中；外部用户当前 rate limited。也就是说，它避开最容易误导 / 打扰 / 烧钱的场景。</p>
+    <h3>speculation 使用 copy-on-write overlay</h3>
+    <p><code>startSpeculation()</code> 为每次预测创建临时 overlay：</p>
+    <ul>
+      <li>写工具只允许 <code>Edit</code>、<code>Write</code>、<code>NotebookEdit</code>，且必须满足 auto-accept edits 条件；</li>
+      <li>写入前把原文件 copy 到 overlay，后续读同一文件重定向到 overlay；</li>
+      <li>写出 cwd 直接 deny；</li>
+      <li>Read/Glob/Grep/ToolSearch/LSP/TaskGet/TaskList 等安全读工具允许；</li>
+      <li>Bash 只允许 <code>checkReadOnlyConstraints()</code> 判定为 read-only 的命令；</li>
+      <li>其他工具默认 deny，并记录 boundary。</li>
+    </ul>
+    <p>用户接受 speculation 时才把 overlay 中的 written paths copy 回主工作区；不接受或失败则清理 overlay。</p>
+    <h3>注入回主对话前会清洗消息</h3>
+    <p><code>prepareMessagesForInjection()</code> 会移除：thinking / redacted_thinking；没有成功 tool_result 的 pending tool_use；interruption 文本；空白-only message。如果 speculation 没完整完成，还会裁掉尾部 assistant turn，保证后续模型请求以 user message 结尾，避免不支持 prefill 的模型报错。</p>
+    <p><strong>可借鉴点：</strong>预测执行能显著提升体感速度，但必须有 overlay 隔离、只读边界、工具白名单、消息清洗、失败回退正常 query。</p>
+
+    <h2 id="s15">15. LSP 不是简单工具，而是异步诊断输入通道<a class="anchor" href="#s15">#</a></h2>
+    <p><strong>相关源码：</strong><code>services/lsp/manager.ts</code> · <code>LSPDiagnosticRegistry.ts</code> · <code>passiveFeedback.ts</code> · <code>tools/LSPTool/LSPTool.ts</code></p>
+    <p>LSPTool 提供 go-to-definition、references、hover、symbols、call hierarchy 等能力；更值得注意的是 passive diagnostics 机制。</p>
+    <ul>
+      <li>LSP manager 启动异步，不阻塞 CLI startup；状态有 <code>not-started/pending/success/failed</code>，用 generation counter 防过期初始化 promise 回写。</li>
+      <li>插件刷新后可 reinitialize LSP，旧实例 best-effort shutdown，避免插件 LSP server 漏进程。</li>
+      <li><code>passiveFeedback.ts</code> 监听各 server 的 <code>textDocument/publishDiagnostics</code>，转换成 Claude diagnostic attachment。</li>
+      <li><code>LSPDiagnosticRegistry.ts</code> 把异步 diagnostics 暂存，下一轮 <code>getAttachments()</code> 自动送入模型上下文。</li>
+      <li>诊断跨 turn 去重：按 file URI + message + severity + range + source/code 生成 key；deliveredDiagnostics 用 LRU 限 500 个文件。</li>
+      <li>体量有上限：每文件最多 10 条，总共最多 30 条，按 severity 排序优先 error。</li>
+      <li>文件被编辑时可清掉该文件 delivered diagnostic，使同位置的新诊断还能再出现。</li>
+      <li>LSPTool 本身 read-only/concurrency-safe，但 validateInput 限制文件存在 / regular file/10MB，并跳过 UNC path，避免 Windows NTLM credential leak。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>IDE/LSP 能力不应只作为"模型主动查代码"的工具，也可作为异步反馈通道，把编译器 / 语言服务器错误主动注入下一轮上下文，同时必须去重和限流。</p>
+
+    <h2 id="s16">16. Cron / Scheduled Tasks 体现了 durable agent 的调度治理<a class="anchor" href="#s16">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/cronScheduler.ts</code> · <code>cronTasksLock.ts</code> · <code>cronJitterConfig.ts</code> · <code>tools/ScheduleCronTool/CronCreateTool.ts</code></p>
+    <p>scheduled tasks 不是简单 <code>setTimeout(prompt)</code>。2.1.233 没有独立 <code>/schedule</code> slash；入口是 <code>CronCreate</code> / <code>CronList</code> / <code>CronDelete</code>。关键设计：</p>
+    <ul>
+      <li>durable task 写 <code>.claude/scheduled_tasks.json</code>，session-only task 存 bootstrap state。</li>
+      <li>同一项目多 session 时用 <code>.claude/scheduled_tasks.lock</code> 做 scheduler lease；<code>wx</code> 原子创建，PID liveness 检测，owner 死亡后被动 session 接管。</li>
+      <li>非 owner session 定期 probe lock，但不执行 file-backed task，避免 double-fire。</li>
+      <li>recurring task 用 jitter 避开整点峰值；jitter config 来自 GrowthBook，60 秒 refresh，是运维级 fleet load-shedding lever。</li>
+      <li>recurring task 有 max age，默认可自动过期；过期任务最后 fire 一次后删除。</li>
+      <li>missed one-shot task 启动时不直接执行，而是生成 notification，要求模型先用 AskUserQuestion 问用户是否现在执行。</li>
+      <li>missed prompt 用动态长度 code fence 包裹，fence 长度比 prompt 中最长 backtick run 多一，防止 prompt 里的 <code>```</code> 提前闭合导致 prompt injection。</li>
+      <li>CronCreate 限制最多 50 jobs，cron 表达式必须未来一年内有匹配时间；teammate 不允许 durable cron，避免重启后 agentId orphan。</li>
+      <li>check timer、lock probe 都 <code>unref()</code>，不让 scheduler 单独阻止进程退出。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>一旦 agent 支持"未来自动执行"，就进入 durable automation 领域。必须处理多实例互斥、错过任务确认、prompt injection 包裹、jitter、过期、kill switch、持久 / 非持久边界。</p>
+
+    <h2 id="s17">17. 企业网络层：proxy、mTLS、CA、privacy level<a class="anchor" href="#s17">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/privacyLevel.ts</code> · <code>proxy.ts</code> · <code>caCerts.ts</code> · <code>mtls.ts</code> · <code>managedEnv.ts</code></p>
+    <ul>
+      <li><code>privacyLevel.ts</code> 定义三层：<code>default &lt; no-telemetry &lt; essential-traffic</code>。</li>
+      <li><code>CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC</code> 进入 essential-traffic，禁非必要网络流量；<code>DISABLE_TELEMETRY</code> 只禁 telemetry。</li>
+      <li><code>proxy.ts</code> 支持 <code>https_proxy/HTTPS_PROXY/http_proxy/HTTP_PROXY</code>，小写优先；支持 NO_PROXY exact host、domain suffix、wildcard、host:port、IP。</li>
+      <li>axios 全局 interceptor 会先 eject 旧 interceptor，避免 settings 变更后重复叠加。</li>
+      <li>Bun fetch、undici、axios、WebSocket、AWS SDK 都有各自 proxy/mTLS 接入路径。</li>
+      <li><code>CLAUDE_CODE_PROXY_RESOLVES_HOSTS</code> 允许把 DNS 交给 proxy，适配本地 DNS 不可用的 sandbox / 企业网络。</li>
+      <li><code>ANTHROPIC_UNIX_SOCKET</code> 只在 <code>forAnthropicAPI</code> 时使用，避免 MCP/SSE 等非 Anthropic API 请求被误路由到 auth proxy。</li>
+      <li><code>caCerts.ts</code> 自定义 CA 时会包含 base CAs，避免设置 <code>ca</code> 后替换掉默认根证书；同时 lazy require <code>tls</code>，避免常规路径多占 ~750KB heap。</li>
+      <li><code>mtls.ts</code> 支持 client cert/key/passphrase，并可为 undici/axios/WebSocket 提供 TLS options。</li>
+      <li><code>disableKeepAlive()</code> 在 stale-pool <code>ECONNRESET</code> 后关闭 keepalive，使 retry 开新连接，不复用坏连接池。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>企业 agent 的网络层要覆盖统一代理、NO_PROXY、私有 CA、mTLS、fetch/axios/ws/AWS 多栈一致性、禁非必要流量、连接池故障降级。</p>
+
+    <h2 id="s18">18. Model governance：模型 allowlist 与 provider override<a class="anchor" href="#s18">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/settings/types.ts</code> · <code>utils/model/modelAllowlist.ts</code> · <code>modelStrings.ts</code> · <code>validateModel.ts</code></p>
+    <ul>
+      <li><code>availableModels</code>：企业 allowlist，支持 family alias、version prefix、full model ID。</li>
+      <li>空数组表示阻止所有 user-specified models，只能用默认模型。</li>
+      <li>family alias 如 <code>opus</code> 默认是整个 family wildcard；但若 allowlist 同时有 <code>opus</code> 和 <code>opus-4-5</code>，具体版本会收窄 family wildcard，避免管理员本想限制到 4.5 却意外放开所有 opus。</li>
+      <li>version prefix 必须在 segment boundary 匹配，避免 <code>opus-4-5</code> 错匹配 <code>opus-4-50</code>。</li>
+      <li><code>modelOverrides</code> 把 canonical first-party ID 映射到 provider-specific string，例如 Bedrock inference profile ARN。</li>
+      <li>Bedrock path 会后台查询 inference profiles，用 canonical substring 找匹配 profile；失败则 fallback 内置 model string，不阻塞启动。</li>
+      <li><code>resolveOverriddenModel()</code> 可把 provider-specific override 反查回 canonical ID，供 allowlist 判断。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>模型治理不能只提供一个 <code>MODEL=xxx</code> env。企业需要可审计 allowlist、别名语义、版本前缀边界、provider deployment override、失败 fallback。</p>
+
+    <h2 id="s19">19. MCP 与 marketplace policy 是下载 / 连接前的门禁<a class="anchor" href="#s19">#</a></h2>
+    <p><strong>相关源码：</strong><code>services/mcp/config.ts</code> · <code>envExpansion.ts</code> · <code>oauthPort.ts</code> · <code>services/oauth/crypto.ts</code> · <code>utils/plugins/marketplaceHelpers.ts</code> · <code>utils/settings/types.ts</code></p>
+    <ul>
+      <li><code>allowedMcpServers</code> / <code>deniedMcpServers</code> 支持按 serverName、serverCommand、serverUrl 三种方式匹配。</li>
+      <li>denylist 绝对优先。</li>
+      <li>allowlist 为 <code>undefined</code> 表示无限制，<code>[]</code> 表示全部阻断。</li>
+      <li>若 allowlist 中存在 command-based entries，则 stdio server 必须匹配 command entry，而不是退回 name match；URL entries 对 remote server 同理。</li>
+      <li><code>allowManagedMcpServersOnly</code> 开启时 allowlist 只读 policySettings；但 deniedMcpServers 仍合并所有来源，用户始终可为自己 deny 更多 server。</li>
+      <li>SDK-type MCP server 豁免，因为 CLI 不 spawn 进程也不开网络连接，只是 SDK transport placeholder。</li>
+      <li><code>filterMcpServersByPolicy()</code> 用于 <code>--mcp-config</code>、SDK <code>mcp_set_servers</code> 这类绕过常规配置读取的入口，避免 side channel 绕过 policy。</li>
+      <li>MCP config env expansion 支持 <code>${VAR}</code> 和 <code>${VAR:-default}</code>，同时返回 missingVars 便于明确报错。</li>
+      <li>OAuth redirect port 使用随机高端口；Windows 避开动态端口范围，fallback 到 3118。</li>
+      <li>OAuth PKCE/state 使用 32 字节随机数 + base64url。</li>
+      <li>marketplace policy 在下载前执行：<code>blockedMarketplaces</code> 优先于 <code>strictKnownMarketplaces</code>；hostPattern/pathPattern 支持企业粗粒度允许；被阻断的 source 不触碰文件系统。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>外部工具 / 插件 / 市场的门禁要尽量发生在下载前、连接前、spawn 前，并覆盖所有配置入口，而不只是在 UI 层隐藏。</p>
+
+    <h2 id="s20">20. Shell 长任务治理：输出落盘、大小 watchdog、交互 prompt 检测<a class="anchor" href="#s20">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/ShellCommand.ts</code> · <code>tasks/LocalShellTask/LocalShellTask.tsx</code> · <code>utils/shell/outputLimits.ts</code></p>
+    <ul>
+      <li>Bash 命令 stdout/stderr 可直接写文件 fd，避免 JS 进程处理海量输出。</li>
+      <li>foreground timeout 到期时支持 auto-background；否则 SIGTERM/SIGKILL。</li>
+      <li>background 后启动 size watchdog，每 5 秒 stat 输出文件；超过 <code>MAX_TASK_OUTPUT_BYTES</code> 直接 SIGKILL，防 stuck append loop 填满磁盘。</li>
+      <li>小输出可内联；大输出保留 output file path/size/task id。</li>
+      <li><code>BASH_MAX_OUTPUT_LENGTH</code> 上限 150000，默认 30000，通过 <code>validateBoundedIntEnvVar()</code> 防止 env 配成极大值。</li>
+      <li>LocalShellTask 有 stall watchdog：45 秒无输出增长后 tail 最后 1KB，若末行像 <code>(y/n)</code>、<code>Press Enter</code>、<code>Continue?</code>、<code>Overwrite?</code> 等交互 prompt，会给模型发 task-notification，建议 kill 并用 piped input 或 non-interactive flag 重跑。</li>
+      <li>任务结束通知有 notified flag 原子 check/set，避免 TaskStop 等路径重复通知。</li>
+      <li>后台 shell task 状态变化会 abort active speculation，避免预测结果引用陈旧 task output。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>Shell 能力要有输出文件化、输出大小硬上限、超时 / 后台化、交互卡死检测、去重通知、预测执行失效联动。</p>
+
+    <h2 id="s21">21. Plan Mode 是审批工作流，不只是"先想再做"<a class="anchor" href="#s21">#</a></h2>
+    <p><strong>相关源码：</strong><code>tools/EnterPlanModeTool/EnterPlanModeTool.ts</code> · <code>ExitPlanModeV2Tool.ts</code> · <code>utils/planModeV2.ts</code> · <code>utils/plans.ts</code></p>
+    <ul>
+      <li><code>EnterPlanModeTool</code> 切换 permission mode，并在 plan mode 中明确禁止写文件（除 plan 文件）。</li>
+      <li><code>ExitPlanModeV2Tool</code> 本身 <code>requiresUserInteraction()</code>，普通用户需要确认退出 plan mode。</li>
+      <li>若是 teammate 且 <code>isPlanModeRequired()</code>，退出 plan mode 不弹本地 UI，而是写 mailbox 给 team lead：<code>plan_approval_request</code>，含 plan file path/content/requestId。</li>
+      <li>approval request id 用 agent/team name 生成，in-process teammate task 会显示 awaiting approval。</li>
+      <li>plan 存为真实文件；CCR web UI 可编辑 plan，工具会把 edited plan 写回磁盘，并在 remote 时重新 snapshot。</li>
+      <li><code>plans.ts</code> 为 session 生成 word slug，resume 时可从 file snapshot 或消息历史恢复 plan；fork session 生成新 slug，避免 fork 与原 session clobber 同一个 plan 文件。</li>
+      <li><code>plansDirectory</code> 若由 settings 指定，必须在 project root 内，否则 fallback 全局 plans 目录，防 path traversal。</li>
+      <li>plan mode agent count 按订阅 / 企业 tier 调整；plan prompt 长度还有实验 arms，用成本 / 拒绝率 / 反馈作为优化指标。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>复杂变更前的 plan 不只是 prompt engineering，而可以做成持久计划文件 + 审批请求 + 可编辑快照 + resume/fork 恢复 + 权限模式切换。</p>
+
+    <h2 id="s22">22. 多进程 / 远程生命周期有注册表、keepalive 与清理<a class="anchor" href="#s22">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/concurrentSessions.ts</code> · <code>sessionActivity.ts</code> · <code>cleanupRegistry.ts</code> · <code>cleanup.ts</code></p>
+    <ul>
+      <li><code>concurrentSessions.ts</code> 为顶层 session 写 <code>~/.claude/sessions/&lt;pid&gt;.json</code>，记录 pid/sessionId/cwd/startedAt/kind/entrypoint；subagent/teammate 不登记，避免污染并发 session 统计。</li>
+      <li><code>/resume</code> 或 session switch 后更新 PID 文件中的 sessionId，避免 <code>claude ps</code> 读错 transcript。</li>
+      <li>stale PID 文件会被清理；但 WSL 场景保守跳过删除，因为 Windows-native Claude 的 PID 在 WSL 中不可探测，避免误删活 session。</li>
+      <li><code>sessionActivity.ts</code> 用 refcount 跟踪 api_call/tool_exec 活跃度；refcount &gt; 0 时每 30 秒 heartbeat，refcount 回 0 后启动 idle 30s 诊断日志。</li>
+      <li>keepalive 发送由 <code>CLAUDE_CODE_REMOTE_SEND_KEEPALIVES</code> 控制，但诊断日志总是记录，方便排查远程 idle gap。</li>
+      <li>shutdown 时记录 active reasons 和 oldest activity age。</li>
+      <li><code>cleanupRegistry.ts</code> 提供全局 cleanup set；sandbox、cron lock、LSP、background task、plugin polling 等都能注册退出清理。</li>
+      <li><code>cleanup.ts</code> 清理 transcripts、MCP logs、tool-results、plan files、file history backups、session-env、debug logs、image cache、paste cache、stale agent worktrees。</li>
+      <li>若 settings 有 validation errors 且用户显式设过 <code>cleanupPeriodDays</code>，会跳过 cleanup，而不是回退默认 30 天误删数据。</li>
+      <li>NPM cache/native version cleanup 用 marker file + lock，24 小时最多一次，避免多进程重复重清理。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>企业 agent 要支持 <code>ps</code>、远程 keepalive、退出清理、数据 retention、stale process recovery，并在配置错误时避免"默认值误删"。</p>
+
+    <div class="panel" id="s23">
+      <h3>23. 这轮追加后更完整的借鉴清单</h3>
+      <p>结合前 12 节和本轮追加，可以把 Claude Code 的企业级能力重新归纳为四层：</p>
+      <ol>
+        <li><strong>治理层</strong>：remote managed settings、policy limits、model/MCP/plugin allowlist、privacy level、managed hooks only。</li>
+        <li><strong>执行层</strong>：permissions、sandbox、Bash/PowerShell static analysis、worktree、plan approval、cron、background task。</li>
+        <li><strong>协作层</strong>：team memory secret guard、mailbox plan approval、session registry、LSP passive diagnostics、prompt suggestion/speculation。</li>
+        <li><strong>运维层</strong>：telemetry/tracing、event uploader backpressure、proxy/mTLS/CA、cleanup/retention、keepalive、jitter/locks。</li>
+      </ol>
+      <p>如果要学习"企业级 agent 怎么从 demo 走向生产"，这些源码比单个 tool implementation 更值得反复看。</p>
+    </div>
+
+    <h2 id="s24">24. AutoDream：跨会话后台 memory consolidation<a class="anchor" href="#s24">#</a></h2>
+    <p><strong>相关源码：</strong><code>services/autoDream/autoDream.ts</code> · <code>config.ts</code> · <code>consolidationLock.ts</code> · <code>consolidationPrompt.ts</code> · <code>tasks/DreamTask/DreamTask.ts</code></p>
+    <p>AutoDream 是一套更长期的 memory 运维机制：不是每轮都抽取 memory，而是在后台周期性 review 多个历史 session，把跨会话学习沉淀到 auto memory。</p>
+    <ul>
+      <li>触发顺序是 cheapest first：先看时间门槛，再扫描 session 数，再抢 lock。</li>
+      <li>默认 <code>minHours=24</code>、<code>minSessions=5</code>，也可由 GrowthBook 配置。</li>
+      <li>当前 session 会从候选里排除，避免刚触发的 session mtime 干扰判断。</li>
+      <li>time gate 通过后若 session 数不足，有 10 分钟 scan throttle，避免每 turn 反复扫磁盘。</li>
+      <li>lock 文件 <code>.consolidate-lock</code> 放在 memory dir 内，mtime 本身就是 <code>lastConsolidatedAt</code>，文件内容是 holder PID。</li>
+      <li>lock 有 stale 保护：PID 死亡或超过 1 小时可回收；失败时 rollback mtime，避免错误地推迟下一次 consolidation。</li>
+      <li>真正执行时用 <code>runForkedAgent()</code>，<code>querySource: 'auto_dream'</code>、<code>skipTranscript: true</code>，且只能通过 <code>createAutoMemCanUseTool(memoryRoot)</code> 写 memory 目录。</li>
+      <li>Bash 明确限制为 read-only 命令，prompt 中提前告知"不用探测写权限"。</li>
+      <li>DreamTask 把 forked agent 的进度折叠到 UI，收集 Edit/Write touched paths，完成后向主 transcript 注入 "Improved memory files" 系统消息。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>长期记忆不是只靠"本轮提取"。企业 agent 可以有独立的后台记忆整理作业，用时间 / 数量门槛、跨进程 lock、失败 rollback、只读工具约束和 UI task 进度，把 memory 从事件流变成可治理的数据资产。</p>
+
+    <h2 id="s25">25. Magic Docs：被动阅读触发的自动文档维护<a class="anchor" href="#s25">#</a></h2>
+    <p><strong>相关源码：</strong><code>services/MagicDocs/magicDocs.ts</code> · <code>services/MagicDocs/prompts.ts</code></p>
+    <p>Magic Docs 是另一个"agent 自维护知识库"机制。文件第一行包含：</p>
+    <pre><code># MAGIC DOC: Some Title</code></pre>
+    <p>当该文件被 Read 工具读到后，会注册为 tracked magic doc。之后在主对话的 post-sampling hook 中，如果最后一轮没有 tool calls 且 querySource 是 <code>repl_main_thread</code>，后台用一个只允许 Edit 的 built-in agent 更新该文档。重要细节：</p>
+    <ul>
+      <li>不是启动时扫全仓库，而是<strong>读到才注册</strong>，成本低且跟用户关注点一致。</li>
+      <li>每次更新前重新 Read 当前文件；如果文件删除 / 不可读，或 header 被移除，就从 tracked map 删除。</li>
+      <li>克隆 FileStateCache 并删除该 doc 的 cache entry，避免 FileReadTool 返回 file_unchanged stub，确保拿到真实内容。</li>
+      <li>只允许 Edit 且只能编辑同一个 doc path，其他工具全部 deny。</li>
+      <li>prompt 强调：不是 changelog，不要写 "Previously/Updated to"，而是 in-place 更新当前事实；文档用于 overview/architecture/entry points，不做逐行代码讲解。</li>
+      <li>支持 <code>~/.claude/magic-docs/prompt.md</code> 自定义模板，变量替换是单 pass，避免 <code>$</code> backreference corruption 和二次替换。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>文档维护可以做成被动订阅 + 空闲后台更新 + 单文件写权限 + 当前态文档哲学，比"让模型每次都记得更新 docs"可靠得多。</p>
+
+    <h2 id="s26">26. Auto Mode classifier：用另一个模型做权限裁决，但防 prompt injection<a class="anchor" href="#s26">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/permissions/yoloClassifier.ts</code> · <code>classifierShared.ts</code> · <code>utils/classifierApprovals.ts</code> · <code>classifierApprovalsHook.ts</code></p>
+    <p>Auto Mode 不是简单规则表，而是把当前 transcript 投影成紧凑格式，再用 sideQuery 调 classifier 判断是否 block。安全上最值得学的点：</p>
+    <ul>
+      <li>classifier transcript 只包含用户文本和 assistant tool_use，<strong>刻意排除 assistant text</strong>，因为 assistant text 是模型生成的，可能被注入内容操纵 classifier。</li>
+      <li>queued user command 会作为 user turn 注入 classifier transcript，避免队列命令绕过语义判断。</li>
+      <li>每个工具可实现 <code>toAutoClassifierInput()</code> 把输入投影成更适合分类的摘要；历史里有 malformed tool input 时 catch 后 fallback raw input 并记 telemetry，而不是让 classifier 崩掉。</li>
+      <li>新版 JSONL transcript 使用 <code>{"Bash":"ls"}</code> / <code>{"user":"..."}</code>，JSON escaping 让 hostile content 不能伪造下一行 user/tool 记录。</li>
+      <li>CLAUDE.md 作为单独 message 包入 <code>&lt;user_claude_md&gt;</code> 并加 cache_control；它被视为用户意图的一部分，但与 transcript 明确分隔。</li>
+      <li>默认两阶段 XML：Stage 1 快速放行，可疑再 Stage 2 深查；Stage 2 复用同一个 transcript+action cache prefix。HARD 外泄翻不过，SOFT 才允许点名放行。</li>
+      <li>API error 时把 classifier prompt、token 对比、transcript entry 数等写到 session-scoped temp dump，供 <code>/share</code> 收集排障。</li>
+      <li><code>classifierApprovals.ts</code> 记录每个 toolUseID 是 Bash classifier 还是 auto-mode 批准，UI 可显示"为什么被自动批准"。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>用 LLM 做权限裁决时，最重要的不是"问另一个模型安全吗"，而是如何构造不可被 assistant 自己污染的裁决输入，以及如何缓存、降级、审计和调试。</p>
+
+    <h2 id="s27">27. Remote Session：WebSocket 控制面 + HTTP 数据面 + 权限桥<a class="anchor" href="#s27">#</a></h2>
+    <p><strong>相关源码：</strong><code>remote/RemoteSessionManager.ts</code> · <code>SessionsWebSocket.ts</code> · <code>remotePermissionBridge.ts</code> · <code>utils/sessionIngressAuth.ts</code></p>
+    <ul>
+      <li>接收侧走 WebSocket 订阅，发送用户消息走 HTTP POST，形成读写分离的 hybrid transport。</li>
+      <li>WebSocket 每次 connect 都重新取 access token，支持 token refresh 后重连。</li>
+      <li>close code 4003 视为永久 unauthorized，不再重连。</li>
+      <li>close code 4001 session not found 有短暂 retry budget，因为 compact 期间服务端可能短时间认为 session stale。</li>
+      <li>普通瞬断最多重连 5 次；ping interval 30 秒。</li>
+      <li>remote permission request 是 control_request；本地 CLI 为远端 tool_use 构造 synthetic AssistantMessage，复用本地 permission UI。</li>
+      <li>若远端有本地不知道的 MCP tool，会创建 minimal Tool stub 走 fallback permission request，而不是直接崩溃。</li>
+      <li>不支持的 control_request subtype 会立即回 error response，避免服务端永远等不到响应。</li>
+      <li><code>sessionIngressAuth.ts</code> 支持三种 token 来源：env、file descriptor、well-known file；FD 只能读一次所以会缓存，子进程 FD 丢失时 fallback 文件。</li>
+      <li><code>sk-ant-sid</code> session key 用 Cookie + X-Organization-Uuid，JWT 用 Bearer。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>远程 agent 的权限 UI 不应重新做一套。可以用远程 control message → 本地 synthetic tool_use → 本地审核 UI → control_response 复用已有治理链路。</p>
+
+    <h2 id="s28">28. Computer Use：桌面自动化需要全局互斥与系统级细节<a class="anchor" href="#s28">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/computerUse/gates.ts</code> · <code>computerUseLock.ts</code> · <code>executor.ts</code> · <code>drainRunLoop.ts</code> · <code>escHotkey.ts</code></p>
+    <ul>
+      <li>功能默认关闭，通过订阅 tier、GrowthBook、env gate 控制；坐标模式第一次读取后 frozen，避免 mid-session 配置翻转导致 prompt 说 pixels 但 executor 用 normalized。</li>
+      <li><code>computer-use.lock</code> 放在 <code>~/.claude</code>，用 <code>wx</code> 原子创建；同 session 可重入，其他 live session 阻塞；PID stale 后回收。</li>
+      <li>lock 获取后注册 graceful shutdown cleanup；释放是 idempotent。</li>
+      <li>macOS 执行器把 terminal bundle id 当 surrogate host，截图 / 隐藏 / 激活时避免 terminal 抢焦点或出现在截图里。</li>
+      <li>鼠标点击前有 move-and-settle；drag 才使用 eased animation，避免普通移动触发 hover/drag 副作用。</li>
+      <li>modifier key press/release 用栈记录已按下键，并在 finally 中反向释放，避免异常后卡住 Cmd/Shift。</li>
+      <li>大段输入通过 clipboard paste：先保存剪贴板，写入后 read-back verify，再 Cmd+V，最后 restore；如果 write 没 round-trip，绝不 paste。</li>
+      <li>bare Escape 有特殊处理，用于允许模型合成 Escape 同时不和用户中断 hotkey 混淆。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>GUI agent 必须有单用户全局锁、stale recovery、焦点 / 截图隔离、剪贴板恢复、modifier 释放、坐标配置冻结，否则稳定性和安全性都很脆弱。</p>
+
+    <h2 id="s29">29. Commit / PR attribution：把 agent 贡献写成可审计元数据<a class="anchor" href="#s29">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/commitAttribution.ts</code> · <code>attribution.ts</code> · <code>generatedFiles.ts</code> · <code>tools/shared/gitOperationTracking.ts</code></p>
+    <ul>
+      <li>Edit/Write 后记录文件 content hash、mtime、Claude contribution chars。</li>
+      <li>字符贡献不是简单看长度差，而是通过 common prefix/suffix 找实际 changed region，能处理同长度替换。</li>
+      <li>对 bash 等非标准路径创建 / 删除文件也有 trackFileCreation/trackFileDeletion/bulk changes。</li>
+      <li>bulk changes 只复制一次 Map，避免大量文件 diff 时 O(n²)。</li>
+      <li>commit attribution 合并多 session state，baseline earliest wins，Claude contribution 累加。</li>
+      <li>generated/vendor 文件按 Linguist 风格排除：lockfile、minified、bundle、protobuf、dist/build/node_modules/vendor 等。</li>
+      <li>内部模型名只允许在明确 allowlist 的私有 repo 中出现在 trailers；外部 repo fallback public model name，防 codename leak。</li>
+      <li>remote mode attribution 默认写 session URL，而不是本地模型 trailer。</li>
+      <li><code>gitOperationTracking.ts</code> 识别 git commit/push/cherry-pick/merge/rebase、gh pr create/edit/merge/comment/close/ready、glab mr create、curl POST PR endpoint，并把 PR 链接写回 session。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>企业希望知道哪些代码由 agent 生成、哪些由人修改。与其事后猜，不如在执行期维护文件级 attribution state + commit/PR 元数据 + 生成文件排除 + 模型名脱敏。</p>
+
+    <h2 id="s30">30. WebFetch 的网络安全边界比普通 GET 复杂很多<a class="anchor" href="#s30">#</a></h2>
+    <p><strong>相关源码：</strong><code>tools/WebFetchTool/WebFetchTool.ts</code> · <code>utils.ts</code> · <code>preapproved.ts</code></p>
+    <ul>
+      <li>权限规则粒度是 <code>domain:&lt;hostname&gt;</code> 而不是整个 URL，降低带 query secret 的规则落盘风险。</li>
+      <li>有 preapproved docs/code domain allowlist，但注释明确：只适用于 WebFetch GET，sandbox 网络限制不能继承该 allowlist，因为很多域名支持 upload/POST，会产生外泄风险。</li>
+      <li>path-scoped preapproval 要求 path segment boundary，例如 <code>/anthropics</code> 不匹配 <code>/anthropics-evil</code>。</li>
+      <li>URL validator 禁止 username/password，要求 public-looking hostname；http 自动升级 https。</li>
+      <li>默认先请求 Anthropic domain_info 做 blocklist/preflight；企业网络阻断该请求时可用 settings <code>skipWebFetchPreflight</code>。</li>
+      <li>content length 10MB、fetch timeout 60s、domain check timeout 10s、same-host redirect 最多 10 次。</li>
+      <li>不自动跟随跨 host redirect，而是返回 redirect 信息要求模型重新调用 WebFetch，让用户 / 权限链路重新审视新 host。</li>
+      <li>支持 egress proxy block 检测：403 + <code>X-Proxy-Error: blocked-by-allowlist</code> 会返回结构化 EGRESS_BLOCKED。</li>
+      <li>HTML 转 markdown 的 turndown lazy load，避免常规路径多占 heap。</li>
+      <li>二进制响应原样保存到 tool-results，并提示 Claude 可用 Read 检查原文件。</li>
+      <li>URL cache 15 分钟、50MB；domain preflight cache 5 分钟，只缓存 allowed，不缓存 blocked/failed。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>联网工具要区分 GET 内容获取、浏览器 / 登录态访问、sandbox 网络、跨域 redirect、企业 egress policy、二进制落盘这些不同风险面。</p>
+
+    <h2 id="s31">31. Ripgrep / Grep：代码搜索工具也有资源治理和安全兜底<a class="anchor" href="#s31">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/ripgrep.ts</code> · <code>tools/GrepTool/GrepTool.ts</code> · <code>GlobTool.ts</code> · <code>utils/codeIndexing.ts</code></p>
+    <ul>
+      <li>ripgrep 可用 system/builtin/embedded 三种模式；bundled 模式下通过 <code>argv0='rg'</code> 复用同一 native binary。</li>
+      <li>system rg 只返回 command name <code>rg</code>，不直接执行解析出的 systemPath，避免当前目录恶意 <code>rg.exe</code> PATH hijack。</li>
+      <li>rg stdout buffer 20MB，timeout 默认 20s，WSL 60s；超时会 SIGTERM 后升级 SIGKILL。</li>
+      <li>EAGAIN/resource temporarily unavailable 时只对当前调用 retry <code>-j 1</code>，不把全局 rg 降成单线程，避免大 repo 后续变慢。</li>
+      <li>超时 / overflow 若有 partial results，会丢弃可能不完整的最后一行；若超时无结果抛 RipgrepTimeoutError，让模型知道"搜索没完成"而不是误判无匹配。</li>
+      <li><code>rg --files</code> 文件数统计用 streaming newline count，避免把 20 万文件路径全部读进内存；结果按 10 的幂近似，保护隐私。</li>
+      <li>Grep 默认 <code>head_limit=250</code>，显式 <code>0</code> 才 unlimited；支持 offset 分页，并在结果里说明 pagination。</li>
+      <li>自动排除 <code>.git/.svn/.hg/.bzr/.jj/.sl</code>，<code>--max-columns 500</code> 避免 base64/minified 长行污染上下文。</li>
+      <li>files_with_matches 按 mtime 排序，优先最近改动文件。</li>
+      <li>UNC path 跳过 stat，避免 Windows NTLM credential leak。</li>
+      <li><code>codeIndexing.ts</code> 会识别 sourcegraph/cody/aider/cursor/continue 等 CLI/MCP code indexing 工具，了解用户是否已有外部代码索引生态。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>搜索工具是 agent 的"眼睛"，必须处理超时、部分结果、分页、长行、VCS 噪声、WSL 性能、EAGAIN、PATH hijack、隐私化 telemetry。</p>
+
+    <h2 id="s32">32. File Persistence 与 Teleport Git Bundle：远程环境的代码 / 产物传输<a class="anchor" href="#s32">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/filePersistence/filePersistence.ts</code> · <code>outputsScanner.ts</code> · <code>utils/teleport/gitBundle.ts</code> · <code>api.ts</code></p>
+    <h3>outputs persistence</h3>
+    <ul>
+      <li>只在 <code>FILE_PERSISTENCE</code> feature、<code>CLAUDE_CODE_ENVIRONMENT_KIND=byoc</code>、存在 session token 和 remote session id 时启用。</li>
+      <li>扫描 <code>{cwd}/{sessionId}/outputs</code> 下 turn start 之后修改的文件。</li>
+      <li>递归 readdir 只收 regular files，跳过 symlink；stat 时再次跳过 symlink，防 TOCTOU。</li>
+      <li>超过 file count limit 直接返回 failed persistence，不盲目上传。</li>
+      <li>relativePath 必须不以 <code>..</code> 开头，确保不逃出 outputs 目录。</li>
+      <li>上传并发由 <code>DEFAULT_UPLOAD_CONCURRENCY</code> 控制，返回成功 file_id 和失败列表。</li>
+    </ul>
+    <h3>git seed bundle</h3>
+    <ul>
+      <li>创建远程 session 时可用 git bundle 传输源码快照。</li>
+      <li><code>git stash create</code> 捕获 tracked WIP，但不改 working tree 也不碰 refs/stash；再挂到临时 <code>refs/seed/stash</code> 使 bundle 可达。</li>
+      <li>启动前和 finally 都清理 <code>refs/seed/stash</code> / <code>refs/seed/root</code>，防崩溃遗留污染用户 repo。</li>
+      <li>bundle fallback 链：<code>--all</code> → <code>HEAD</code> → squashed root commit。大仓库可降级到无历史单快照。</li>
+      <li>默认最大 100MB，可由 GrowthBook 调整。</li>
+      <li>空 repo、git error、too large 都有明确 failReason 和 telemetry。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>远程 agent 需要同时解决源代码种子传输和执行产物回传；两者都要有路径边界、symlink/TOCTOU 防护、大小 / 数量限制、失败原因和清理逻辑。</p>
+
+    <h2 id="s33">33. Output Styles：行为模式是可治理的 prompt 插件<a class="anchor" href="#s33">#</a></h2>
+    <p><strong>相关源码：</strong><code>constants/outputStyles.ts</code> · <code>outputStyles/loadOutputStylesDir.ts</code> · <code>utils/plugins/loadPluginOutputStyles.ts</code></p>
+    <p>独立 slash <code>/output-style</code> 已不在 2.1.233 表里，改走 <code>/config</code>；样式在会话开始固定，方便 prompt cache。</p>
+    <ul>
+      <li>built-in 包括 default、Explanatory、Learning。</li>
+      <li>用户 / 项目 / 托管设置都可通过 <code>.claude/output-styles/*.md</code> 或 <code>~/.claude/output-styles/*.md</code> 定义 style。</li>
+      <li>插件也能提供 output style，名称自动 namespace 为 <code>pluginName:styleName</code>。</li>
+      <li>优先级：built-in &lt; plugin &lt; user &lt; project &lt; managed。注意 managed 最后覆盖，体现企业策略优先。</li>
+      <li>插件 style 支持 <code>force-for-plugin</code>，插件启用后可自动应用；多个 forced style 只取第一个并 warning。</li>
+      <li>自定义 style 可设 <code>keep-coding-instructions</code>，决定是否保留默认 coding 指令。</li>
+      <li>frontmatter description 如果不是字符串会被 coerce 或 fallback 从 markdown 内容提取。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>不要把所有行为偏好硬编码进系统 prompt。可以把"教学模式、解释模式、企业强制风格"做成 prompt layer 插件，并纳入 settings/policy 优先级体系。</p>
+
+    <h2 id="s34">34. Frontmatter Hooks：技能 / Agent 自带治理逻辑<a class="anchor" href="#s34">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/frontmatterParser.ts</code> · <code>utils/hooks/registerFrontmatterHooks.ts</code> · <code>skills/loadSkillsDir.ts</code> · <code>tools/AgentTool/loadAgentsDir.ts</code></p>
+    <p>skill/agent markdown 的 frontmatter 不只描述 name/description，还能携带 hooks、allowed-tools、model、effort、paths、context、agent 等执行元数据。</p>
+    <ul>
+      <li>YAML 解析失败后会尝试对含特殊字符的简单 value 自动加引号再 parse，提升 glob/frontmatter 易用性。</li>
+      <li><code>paths</code> 支持 comma-separated string 或 YAML list，并能展开 brace pattern，如 <code>src/*.{ts,tsx}</code>。</li>
+      <li><code>shell</code> 是 file-scoped，默认 bash，也可 powershell；不读取用户 settings.defaultShell，保证 skill 可移植。</li>
+      <li><code>hooks</code> 可注册到 session-scoped hook registry；agent frontmatter 中的 <code>Stop</code> 会自动转换为 <code>SubagentStop</code>，因为 subagent 结束触发的是 SubagentStop。</li>
+      <li>session/agent 结束后这些 hook 会被清理，不污染全局配置。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>插件 / skill 不应只是 prompt 文本。把 frontmatter 变成声明式执行契约，可以让技能自带工具约束、触发路径、模型 / effort、生命周期 hook。</p>
+
+    <h2 id="s35">35. Agent Swarm：团队文件、任务列表和权限同步<a class="anchor" href="#s35">#</a></h2>
+    <p><strong>相关源码：</strong>Agent 的 <code>name</code>（隐式成团）· <code>utils/swarm/spawnInProcess.ts</code> · <code>permissionSync.ts</code> · <code>utils/teammateMailbox.ts</code></p>
+    <p>除普通 subagent 外，源码里还有 swarm/team 机制，更接近多 agent 协作系统。</p>
+    <ul>
+      <li>2.1.178 起不再有 <code>TeamCreate</code>/<code>TeamDelete</code>：会话隐式成团，用 Agent 的 <code>name</code> 拉队友。</li>
+      <li>team file 记录 leadAgentId、leadSessionId、members、cwd、model 等，session 结束注册 cleanup，避免 team 文件永久残留。</li>
+      <li>每个 team 对应一个 task list，创建 team 时 reset task list，保证任务编号从 1 开始。</li>
+      <li>leader 不设置 <code>CLAUDE_CODE_AGENT_ID</code>，避免被误判为 teammate；身份存在 AppState.teamContext。</li>
+      <li>in-process teammate 通过 AsyncLocalStorage 做上下文隔离，独立 AbortController，不因 leader 当前 query interrupt 被杀。</li>
+      <li>teammate task state 记录 planModeRequired、permissionMode、pendingUserMessages、awaitingPlanApproval 等，直接接入 UI task 系统。</li>
+      <li>swarm permission sync 使用 <code>~/.claude/teams/{team}/permissions/{pending,resolved}</code> 文件夹，worker 写 pending，leader 审批后写 resolved。</li>
+      <li>permission request schema 包括 workerId/name/color、toolName、toolUseId、description、input、suggestions、updatedInput、permissionUpdates。</li>
+      <li>写 pending request 用目录级 lock，避免多个 worker 同时写入竞争。</li>
+      <li>同一 mailbox 机制还承载 plan approval、shutdown approval、direct messages 等结构化协议。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>多 agent 不是简单并发 <code>runAgent()</code>。生产级 swarm 需要团队身份、共享任务列表、leader/worker 权限桥、mailbox 协议、in-process/terminal backend 抽象、plan approval 和 cleanup。</p>
+
+    <h2 id="s36">36. Resume / Recovery：从坏 transcript 中恢复可调用上下文<a class="anchor" href="#s36">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/conversationRecovery.ts</code> · <code>sessionStorage.ts</code> · <code>plans.ts</code> · <code>fileHistory.ts</code></p>
+    <p>恢复会话时，源码做了很多 transcript 清洗：</p>
+    <ul>
+      <li>legacy attachment type <code>new_file/new_directory</code> 迁移为当前 file/directory attachment，并补 displayPath。</li>
+      <li>反序列化 user message 时清理非法 permissionMode，避免旧 build / 不同 build 的枚举污染当前运行。</li>
+      <li>unresolved tool_use、orphaned thinking-only assistant message、whitespace-only assistant message 会被过滤，防 API 400。</li>
+      <li>检测到 interrupted_turn 时插入 synthetic user message：<code>Continue from where you left off.</code>，统一成 interrupted_prompt 处理。</li>
+      <li>若最后有效消息是 user，会插入 synthetic assistant <code>NO_RESPONSE_REQUESTED</code> sentinel，让会话即使不自动继续也满足 API 消息格式。</li>
+      <li>resume 时复制 file history snapshot、恢复 plan slug；远程 session plan 文件缺失时先从 file snapshot 恢复，再 fallback 消息历史。</li>
+      <li>invoked skills、skill listing suppression、session start hooks 也在恢复链路里处理，避免恢复后行为与原会话脱节。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>长会话 transcript 一定会出现半截 tool call、半截 thinking、中断用户消息、旧格式 attachment。生产 agent 必须有反序列化迁移和 API-valid 修复层，不能把 JSONL 直接塞回模型。</p>
+
+    <h2 id="s37">37. Prompt Cache Break Detection：把缓存命中率当成可调试对象<a class="anchor" href="#s37">#</a></h2>
+    <p><strong>相关源码：</strong><code>services/api/promptCacheBreakDetection.ts</code> · <code>services/api/claude.ts</code></p>
+    <p>Anthropic prompt cache 对长上下文 agent 非常关键，源码里有专门的 cache break detector。它跟踪的内容包括：system prompt hash；tools schema hash；带 cache_control 的 system hash（捕捉 TTL/scope 改变）；tool names 和 per-tool schema hash；model、fast mode、global cache strategy；beta headers；auto mode active、overage、cached microcompact、effort、extra body params；previous cache read tokens、pending changes、cache deletion pending。关键细节：</p>
+    <ul>
+      <li>compact 与 repl main thread 共用 tracking key，因为它们共享 server-side cache prefix。</li>
+      <li>subagent 用 agentId 隔离 tracking state，避免多个同类 agent 并发时互相误报。</li>
+      <li>speculation、session_memory、prompt_suggestion 等短生命周期 forked agent 不追踪，避免无意义 map 膨胀。</li>
+      <li>tracked sources 上限 10；每个 entry 保存几百 KB diffable content，源码明确防止内存无界增长。</li>
+      <li>MCP tool 名可能含用户路径，diff/telemetry 中会 sanitize 成 <code>mcp</code>。</li>
+      <li>若 toolSchemasChanged 但 added/removed 为 0，会根据 per-tool hash 找出到底哪个工具 schema 变了；注释说这是大量 cache break 的来源。</li>
+      <li>检测到 cache miss 会写 diff 文件到 Claude temp dir，便于排查哪块 prompt/schema 改了。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>prompt cache 不是黑盒优化。企业 agent 应该把系统 prompt、工具 schema、beta header、模型、extra body 这些 cache key 组成部分显式建模和 diff，否则成本 / 延迟抖动很难解释。</p>
+
+    <h2 id="s38">38. QueryGuard：防 React 异步缝隙里的双查询<a class="anchor" href="#s38">#</a></h2>
+    <p><strong>相关源码：</strong><code>utils/QueryGuard.ts</code> · <code>queueProcessor.ts</code> · <code>handlePromptSubmit.ts</code></p>
+    <p>一个很小但很实用的稳定性模式：QueryGuard 用同步状态机保护 query lifecycle。它不是普通 boolean，而是三态：</p>
+    <ul>
+      <li><code>idle</code>：无 query，可 dequeue；</li>
+      <li><code>dispatching</code>：队列已取出 item，但异步链还没进入 onQuery；</li>
+      <li><code>running</code>：onQuery 已 tryStart，主循环执行中。</li>
+    </ul>
+    <p>为什么需要 <code>dispatching</code>？因为 React state 更新有 batching，同步队列处理和异步 submit 之间存在缝隙。如果只靠 React state，可能在"已 dequeue 但 onQuery 未设置 running"的瞬间又启动一个 query。其他细节：</p>
+    <ul>
+      <li><code>tryStart()</code> 返回 generation。</li>
+      <li><code>end(generation)</code> 只有当前 generation 匹配才清理，防止旧 promise finally 覆盖新 query 状态。</li>
+      <li><code>forceEnd()</code> 会递增 generation，让被取消 query 的 finally 变成 stale。</li>
+      <li>暴露 <code>useSyncExternalStore</code> 接口，React UI 能订阅同步状态快照。</li>
+    </ul>
+    <p><strong>可借鉴点：</strong>agent 主循环经常被 UI、队列、远程事件、用户中断同时驱动。一个同步 generation guard 比"到处判断 isLoading"可靠得多。</p>
+
+    <h2 id="s39">39. 这轮新增后的生产化主题<a class="anchor" href="#s39">#</a></h2>
+    <p>本轮继续挖出的主题更偏"系统长期运行后才会暴露的问题"：</p>
+    <ul>
+      <li>后台知识维护：AutoDream、Magic Docs。</li>
+      <li>语义权限裁决：Auto Mode classifier。</li>
+      <li>远程会话控制：WebSocket/HTTP 分离、权限桥、session ingress auth。</li>
+      <li>GUI 自动化安全：Computer Use lock、剪贴板恢复、焦点隔离。</li>
+      <li>工程审计：commit/PR attribution、git operation tracking。</li>
+      <li>网络与搜索工具硬化：WebFetch、Ripgrep/Grep。</li>
+      <li>远程产物与源码传输：file persistence、git bundle fallback。</li>
+      <li>行为可配置化：Output Styles、frontmatter hooks。</li>
+      <li>多 agent 协作：swarm team、task list、permission sync。</li>
+      <li>长会话恢复与成本治理：conversation recovery、prompt cache break detection、QueryGuard。</li>
+    </ul>
+    <p>这些都不是 demo agent 的核心路径，但恰恰是企业级 agent 落地时最容易被忽略、也最有借鉴价值的部分。</p>
+
+    <nav class="page-nav">
+      <a class="prev" href="./todo-tools-gating.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">Todo 工具门控</span>
+      </a>
+      <a class="next" href="./index.html">
+        <span class="dir">返回 →</span>
+        <span class="ttl">回到总览</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

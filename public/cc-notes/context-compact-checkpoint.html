@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上下文管理、压缩与 checkpoint · Claude Code 源码笔记</title>
+<meta name="description" content="上下文来源、auto compact 阈值、compactConversation、prompt-too-long 兜底、microcompact、session-memory compact、三类 checkpoint 边界。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>机制专题<span class="sep">/</span>上下文、压缩与 checkpoint</div>
+  <header class="page-head">
+    <span class="eyebrow">机制专题 · 06</span>
+    <h1>上下文管理、压缩与 checkpoint</h1>
+    <p class="lead">Claude Code 如何组装上下文、何时触发压缩、压缩后如何恢复,以及源码里几类 checkpoint 的边界。项目把 token/context 当成长期运行时资源管理,而不是"超过就报错"。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>上下文来源不是只有聊天历史</a></li>
+        <li><a href="#s2"><span class="num">2</span>auto compact 的触发阈值</a></li>
+        <li><a href="#s3"><span class="num">3</span>compactConversation 的主体流程</a></li>
+        <li><a href="#s4"><span class="num">4</span>prompt-too-long 兜底</a></li>
+        <li><a href="#s5"><span class="num">5</span>microcompact:清理旧工具结果</a></li>
+        <li><a href="#s6"><span class="num">6</span>session-memory compact</a></li>
+        <li><a href="#s7"><span class="num">7</span>"checkpoint" 至少有三种含义</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. 上下文来源不是只有聊天历史<a class="anchor" href="#s1">#</a></h2>
+    <p>一次模型请求的上下文大致由这些部分拼出来:</p>
+    <ol>
+      <li>system prompt:<code>constants/prompts.ts</code> 和 agent/system prompt 构造逻辑。</li>
+      <li>system context:<code>context.ts</code> 中的 cwd、平台、日期、git 信息等。</li>
+      <li>user context:<code>CLAUDE.md</code>、memory prompt、MCP/agent/skill 相关提示、hook 附加上下文等。</li>
+      <li>conversation messages:用户/助手/工具结果/attachment/system 边界消息。</li>
+      <li>tool definitions:<code>tools.ts</code> 汇总的工具 schema;启用 ToolSearch 时部分工具只以 deferred 名字出现。</li>
+      <li>动态 attachments:<code>utils/attachments.ts</code> 在每轮把 <code>@file</code>、MCP resource、deferred tools delta、agent listing delta、nested memory、relevant memories 等注入。</li>
+    </ol>
+    <p>所以"上下文管理"实际包含三件事:控制消息历史长度、控制工具定义长度、控制外部资料/记忆/附件的注入时机。</p>
+
+    <h2 id="s2">2. auto compact 的触发阈值<a class="anchor" href="#s2">#</a></h2>
+    <p>阈值仍是 <strong>effective window − 13_000</strong>（summary 预留上限 <strong>20_000</strong>）。2.1.233 多了一层窗口解析：</p>
+    <ol>
+      <li><code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>（env）</li>
+      <li>settings 的 <code>autoCompactWindow</code>（<code>/autocompact</code> 写入）。<code>autoCompactEnabled</code> 只开关自动 compact，不是窗口来源</li>
+      <li>clientdata / GrowthBook 实验</li>
+      <li>模型默认窗口</li>
+      <li>未知模型可强制按当前 window 收</li>
+    </ol>
+    <p><code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE</code> 仍可把阈值压成 window 的百分比。另有 <code>CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE</code>。<code>DISABLE_COMPACT</code> 关全部 compact，<code>DISABLE_AUTO_COMPACT</code> / <code>autoCompactEnabled: false</code> 只关自动 compact。</p>
+    <p>query 里还可以先吃预计算 compact（<code>tengu_sepia_moth</code> + <code>precomputeCompactionEnabled</code>）。remote 上 reactive compact 还要过 <code>tengu_reactive_compact_remote</code>。连续失败 3 次后本 session 不再试。</p>
+
+    <h2 id="s3">3. compactConversation 的主体流程<a class="anchor" href="#s3">#</a></h2>
+    <p><code>services/compact/compact.ts</code> 的 <code>compactConversation()</code> 不是简单地"把历史发给模型总结":</p>
+    <ol>
+      <li>执行 <code>PreCompact</code> hooks,可追加自定义 compact 指令。</li>
+      <li>设置 UI/SDK 状态:<code>compact_start</code>、<code>setSDKStatus('compacting')</code>。</li>
+      <li>构造 <code>getCompactPrompt(customInstructions)</code>。</li>
+      <li>通过 <code>streamCompactSummary()</code> 生成 summary。默认走 forked-agent 路径以复用主请求 prompt cache。</li>
+      <li>如果 summary 请求本身遇到 prompt-too-long,会用 <code>truncateHeadForPTLRetry()</code> 丢弃最老 API round group 后重试,最多 <code>MAX_PTL_RETRIES = 3</code>。</li>
+      <li>清空/重建 read file state,生成 compact boundary、summary user message、必要 attachments、hook results。</li>
+      <li>把 discovered tool、file cache、invoked skills、plan 等状态带过 compact 边界。</li>
+      <li>执行 PostCompact hooks 和 post-compact cleanup。</li>
+    </ol>
+    <p>compact 后的消息顺序由 <code>buildPostCompactMessages()</code> 固定:</p>
+    <pre><code>compact_boundary
+summaryMessages
+messagesToKeep
+attachments
+hookResults</code></pre>
+    <p>这说明 compact 后的会话并不是"只剩一段 summary",而是一个有边界、有保留尾部、有恢复附件的重组消息链。</p>
+
+    <h2 id="s4">4. prompt-too-long 兜底<a class="anchor" href="#s4">#</a></h2>
+    <p><code>truncateHeadForPTLRetry()</code> 的设计很关键:</p>
+    <ul>
+      <li>先按 API round 分组,避免切断 assistant/tool_result 结构。</li>
+      <li>能从错误里解析 token gap 时,按 gap 丢足够老的 group;解析不了就丢 20%。</li>
+      <li>如果丢完后首条变成 assistant,会补一个 synthetic user marker,避免 API 要求首条必须 user 的错误。</li>
+    </ul>
+    <p>这是 compact 自身也过长时的最后兜底,否则用户会卡在"想压缩但压缩请求也发不出去"的状态。</p>
+
+    <h2 id="s5">5. microcompact:清理旧工具结果<a class="anchor" href="#s5">#</a></h2>
+    <p><code>services/compact/microCompact.ts</code> 是更细粒度的上下文治理:</p>
+    <ul>
+      <li>compactable tools 包括 <code>Read</code>、shell tools、<code>Grep</code>、<code>Glob</code>、<code>WebSearch</code>、<code>WebFetch</code>、<code>Edit</code>、<code>Write</code>。</li>
+      <li>旧路径会把 tool result 内容替换成 <code>[Old tool result content cleared]</code>（这串还在）。</li>
+      <li>2.1.233 制品里没有 <code>CACHED_MICROCOMPACT</code> 这个 flag 名。大结果落盘 / cache edit 仍在，上限可由 GrowthBook 覆盖。</li>
+    </ul>
+
+    <h2 id="s6">6. session-memory compact:用当前会话笔记替代全量总结<a class="anchor" href="#s6">#</a></h2>
+    <p>session memory 的 viewer / <code>current_session_memory</code> attachment 还在。2.1.233 制品里没有 <code>tengu_session_memory</code> / <code>tengu_sm_compact</code>，也看不到“先 session-memory compact、再 legacy summary”这条默认路径。auto compact 走 summary compact / reactive compact / 预计算 compact。</p>
+
+    <h2 id="s7">7. "checkpoint" 至少有三种含义<a class="anchor" href="#s7">#</a></h2>
+    <p>源码里 checkpoint 不是单一概念,需要区分:</p>
+    <ol>
+      <li><strong>compact boundary checkpoint</strong>:<code>SystemCompactBoundaryMessage</code>,subtype 为 <code>compact_boundary</code>。它是压缩后的恢复边界,记录 compact metadata、pre-compact discovered tools、preserved segment 等。</li>
+      <li><strong>transcript parent chain checkpoint</strong>:<code>utils/sessionStorage.ts</code> 通过 <code>parentUuid</code>/<code>logicalParentUuid</code> 维护消息 DAG。compact boundary 的 <code>parentUuid</code> 会特殊处理,防止 resume 时旧消息链 orphan。</li>
+      <li><strong>file history checkpoint</strong>:<code>utils/fileHistory.ts</code> 维护文件修改快照,最多 <code>MAX_SNAPSHOTS = 100</code>。这是面向文件回滚/历史的 checkpoint,和上下文压缩不是同一层。</li>
+    </ol>
+    <p>另外,<code>profileCheckpoint</code> 这类启动性能埋点不是用户语义上的 checkpoint。</p>
+
+    <nav class="page-nav">
+      <a class="prev" href="./hooks.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">Hooks 机制</span>
+      </a>
+      <a class="next" href="./memory-mechanism.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">Memory 机制</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

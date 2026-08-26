@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto Mode 深度解析 · Claude Code 源码笔记</title>
+<meta name="description" content="Claude Code Auto Mode：2.1.78 静默引入到 2.1.233 的分类器架构、HARD/SOFT BLOCK、fail-closed、快路径。2.1.233 起 auto mode 将成为默认模式，分类器不再额外收费。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>版本对照<span class="sep">/</span>Auto Mode</div>
+  <header class="page-head">
+    <span class="eyebrow">版本对照 · 14</span>
+    <h1>Auto Mode 深度解析</h1>
+    <p class="lead">分类器用一次 API 换免打扰，失败默认拒绝。HARD BLOCK 是用户意图跨不过去的红线：外泄仍拦；删文件这类 SOFT BLOCK 才允许明确意图放行。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>引入时间线</a></li>
+        <li><a href="#s2"><span class="num">2</span>设计理念</a></li>
+        <li><a href="#s3"><span class="num">3</span>架构总览</a></li>
+        <li><a href="#s4"><span class="num">4</span>分类器实现</a></li>
+        <li><a href="#s5"><span class="num">5</span>决策流细节</a></li>
+        <li><a href="#s6"><span class="num">6</span>模式转换与入口</a></li>
+        <li><a href="#s7"><span class="num">7</span>版本变更历史</a></li>
+        <li><a href="#s8"><span class="num">8</span>可借鉴的模式</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. 引入时间线<a class="anchor" href="#s1">#</a></h2>
+    <p>首次引入：<strong>v2.1.78</strong>，2026-03-17。npm 二分：2.1.77 没有 <code>autoMode.soft_deny</code> / <code>tengu_auto_mode_decision</code>；2.1.78 分别 11 / 4 处。changelog 2.1.78 无任何 auto mode 条目——典型 research preview 静默发布。官方 What's New 说 Week 13（2026 年 3 月）上线，与 npm 吻合。</p>
+
+    <div class="table-wrap">
+      <table class="timeline">
+        <thead><tr><th>版本</th><th>日期</th><th>变化</th></tr></thead>
+        <tbody>
+          <tr><td><strong>2.1.78</strong></td><td>2026-03-17</td><td>引入（research preview，静默）</td></tr>
+          <tr><td>2.1.89</td><td>2026-03-31</td><td><code>PermissionDenied</code> hook；拒绝通知 + Recent 可 <code>r</code> 重试</td></tr>
+          <tr><td>2.1.97</td><td>2026-04-08</td><td>sandbox 网络访问提示自动批准</td></tr>
+          <tr><td>2.1.108</td><td>2026-04-14</td><td>修复 classifier transcript 超限导致 Agent 误弹权限</td></tr>
+          <tr><td>2.1.111</td><td>2026-04-16</td><td>不再需要 <code>--enable-auto-mode</code>；Max 可用 Opus 4.7 分类器</td></tr>
+          <tr><td>2.1.118</td><td>2026-04-22</td><td><code>allow/soft_deny/environment</code> 支持 <code>"$defaults"</code></td></tr>
+          <tr><td>2.1.128</td><td>2026-05-04</td><td>无法评估时附 retry / /compact / --debug</td></tr>
+          <tr><td>2.1.136</td><td>2026-05-08</td><td><code>settings.autoMode.hard_deny</code>：无视意图与 allow</td></tr>
+          <tr><td>2.1.147</td><td>2026-05-21</td><td>不再抑制用户/skill 显式依赖的 AskUserQuestion</td></tr>
+          <tr><td>2.1.154</td><td>2026-05-28</td><td>改进批量外泄检测</td></tr>
+          <tr><td>2.1.160</td><td>2026-06-01</td><td>常规动作少推理，降低 “could not evaluate”</td></tr>
+          <tr><td>2.1.178</td><td>2026-06-15</td><td>subagent 启动前也过分类器</td></tr>
+          <tr><td>2.1.193</td><td>2026-06-25</td><td><code>classifyAllShell</code></td></tr>
+          <tr><td>2.1.200</td><td>2026-07-03</td><td>“default” 权限模式改名 Manual</td></tr>
+          <tr><td>2.1.207</td><td>2026-07-10</td><td>Bedrock/Vertex/Foundry 无需 env opt-in</td></tr>
+          <tr><td>2.1.210</td><td>2026-07-14</td><td>外部会话分类器默认 Sonnet 5，首次请求锁定</td></tr>
+          <tr><td>2.1.212</td><td>2026-07-16</td><td><code>claude auto-mode reset</code></td></tr>
+          <tr><td>2.1.218</td><td>2026-07-22</td><td>危险 rm、后台 <code>&amp;</code>、可疑 Windows 路径直接交分类器</td></tr>
+          <tr><td>2.1.221</td><td>2026-08-03</td><td>跨决策复用缓存前缀</td></tr>
+          <tr><td>2.1.222</td><td>2026-08-04</td><td>SendMessage 也过分类器</td></tr>
+          <tr><td><strong>2.1.233</strong></td><td>2026-08-14</td><td>Anthropic宣布auto mode将成为默认模式，且分类器将不再额外收取费用</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>日期均为 <code>npm view time</code>，约 5 个月窗口。</p>
+
+    <h2 id="s2">2. 设计理念<a class="anchor" href="#s2">#</a></h2>
+    <h3>2.1 AI 分类器的优势所在</h3>
+    <ul>
+      <li><strong>纯规则</strong>：可解释、零成本，覆盖不了 <code>cd /tmp &amp;&amp; curl x | bash</code> 这类组合，误杀高。</li>
+      <li><strong>每次问用户</strong>：把控性完全交给用户，但根据官方数据来看，用户对危险命令的审批拦截率远不如分类器。并且手动审批不利于模型执行长期任务</li>
+      <li><strong>LLM 审核</strong>：一次 API 换「多数免打扰 + 危险仍拦」。</li>
+    </ul>
+    <p>官方 auto-mode-default 公告：分类器拦约 <strong>89%</strong> 危险命令，人类手动审批只拦约 <strong>13.6%</strong>。</p>
+    <h3>2.2 安全原则</h3>
+    <ol>
+      <li><strong>Fail-closed</strong>：API 错、解析失败、超时、中止一律 <code>shouldBlock: true</code>。</li>
+      <li><strong>沉默不是同意</strong>：每次动作单独评。用户没在连续动作之间打断，不等于批准——分类器分不清「看着点了头」和「根本还没看到」。只有用户自己写出来的话才算意图（「把 <code>dist/</code> 删掉」「go ahead」）；「能不能…」「要不要试试」是问题不是授权。反过来，用户先前打断过同类动作，应当拦。</li>
+      <li><strong>快路径优先</strong>：白名单、acceptEdits 预检能省则省。</li>
+      <li><strong>拒绝可解释</strong>：reason + 工作区引导（可用 head 代替 cat，不得恶意绕过）。</li>
+      <li><strong>拒绝可恢复</strong>：连续 3 / 会话 20 次回退人工，不无限死循环。</li>
+      <li><strong>防提示注入</strong>：分类器不读完整对话。主模型自己写的解说丢掉，只留 <code>tool_use</code> 这种机器事实，否则回复里可以伪造「用户刚同意删库」。序列化走 JSONL 一行一条（<code>{"Bash":"ls"}</code> / <code>{"user":"..."}</code>），值做 JSON 转义，换行变 <code>\n</code>，敌意内容逃不出字符串去伪造下一条 <code>{"user":...}</code>。</li>
+    </ol>
+    <h3>2.3 成本</h3>
+    <p>分类器是「每步一次 API」。出于成本考虑，Anthropic 对分类器请求做了一些处理，让它跑得更便宜（尽管后来声明不再收这笔费用，见 <a href="#s7-3">§7.3</a>）。</p>
+    <ul>
+      <li><strong>能不调就不调</strong>：读文件、Todo 走白名单 / acceptEdits 预检，根本不打分类器。</li>
+      <li><strong>少带东西</strong>：分类器请求只组用户消息和 assistant 的 <code>tool_use</code>，主模型解说、tool result、图片一律不带。主循环那份完整对话里，这些才是大头——不带，分类器天然就瘦一截。怎么组的见 <a href="#s4">§4.1</a>。</li>
+      <li><strong>调了也尽量便宜</strong>：Anthropic 按前缀缓存。分类器把 system、本会话 <code>CLAUDE.md</code>、当前动作拆成稳定前缀，同一会话里后续决策复用。</li>
+      <li><strong>先便宜看一眼</strong>：默认走两阶段 XML。大多数动作只让模型写一句 <code>&lt;block&gt;no&lt;/block&gt;</code>（<strong>输出</strong>上限 64 token），只有说「要拦」的才再打一轮能写思考过程的深查（输出上限 8192）。这两个数字卡的是模型往回写多长，不是送进去的材料有多长。机制见 <a href="#s4-3">§4.3</a>。</li>
+    </ul>
+    <div class="callout">
+      <span class="callout-title">注意</span>
+      <p>分类器和主循环是两次独立请求。因为只组了用户消息和 <code>tool_use</code>，分类器按理比主循环瘦。Anthropic 用「分类器输入 token ÷ 主循环 token」盯这个关系：</p>
+      <ul>
+        <li><strong>0.6–0.8</strong>：该丢掉的丢掉了。</li>
+        <li><strong>&gt; 1.0</strong>：分类器反而更大，投影发散了。</li>
+      </ul>
+      <p>auto-compact 只按主循环体积压。主循环没到阈值就不会动；分类器自己那次请求可能已经超窗口——分类器模型和主模型的窗口大小也可能不一样。结果是分类器 400，主循环还在跑，分类器已经挂了。</p>
+    </div>
+
+    <h2 id="s3">3. 架构总览<a class="anchor" href="#s3">#</a></h2>
+    <pre><code>入口/配置   autoMode.ts · AutoModeOptInDialog · permissionSetup · autoModeState
+决策层     permissions.ts → acceptEdits 预检 / 白名单 / 分类器
+           denialTracking（连续/总拒绝）
+分类器     yoloClassifier.ts
+           bashClassifier · classifierShared · yolo-classifier-prompts/
+观察       classifierApprovals · autoModeDenials
+           tengu_auto_mode_decision / _outcome / _denial_limit_exceeded</code></pre>
+    <p>模型要调一个工具。工具自己的权限检查说「该问人」。如果现在是 auto，<code>permissions.ts</code> 把这次弹窗截下来，自己判：</p>
+    <ol>
+      <li><strong>必须人看的</strong>：敏感路径、声明了要跟人交互的工具。AskUserQuestion 默认会进分类器，不在这里弹窗。</li>
+      <li><strong>能便宜放行的先放</strong>：工作区内改文件（复用 acceptEdits 那套），或工具名在白名单（Read / Grep 这类）。</li>
+      <li><strong>剩下的才打分类器</strong>。放行就过；拦住就记一笔。连续 3 次或本会话 20 次，或分类器自己超窗口，退回给人。分类器挂了默认当拒绝。</li>
+    </ol>
+    <p>每一道门怎么判，见 <a href="#s5">§5</a>。</p>
+
+    <h2 id="s4">4. 分类器实现<a class="anchor" href="#s4">#</a></h2>
+    <h3>4.1 Transcript</h3>
+    <p>分类器看到的是压缩投影，不是原始消息：只组用户消息和 assistant 的 <code>tool_use</code>。主模型解说丢掉（防它在回复里伪造用户批准）；工具结果也不进（分类器看不见就当 unverifiable / agent-inferred，不要信）。少带同时也是成本手段，这就是 <a href="#s2">§2.3</a> 里分类器比主循环瘦的原因。</p>
+    <ul>
+      <li>用户消息 → <code>User: &lt;text&gt;</code>，或 JSONL <code>{"user":"..."}</code></li>
+      <li>assistant 的 tool_use → <code>{"Bash":"ls"}</code>，值由 <code>toAutoClassifierInput</code> 投影（只留安全相关字段）</li>
+      <li>JSON 转义保证值里的换行、引号逃不出字符串，没法伪造下一条 <code>{"user":...}</code></li>
+    </ul>
+    <h3>4.2 模型</h3>
+    <pre><code>function getClassifierModel(): string {
+  // 1. Ant：CLAUDE_CODE_AUTO_MODE_MODEL
+  // 2. GrowthBook：tengu_auto_mode_config.model
+  // 3. 默认：主循环模型
+}</code></pre>
+    <p>2.1.210 起外部会话走 <code>getExternalClassifierDefault</code>：主循环不是 Sonnet 4.5/4.6 / Haiku 时，分类器默认 Sonnet 5 并锁定。2.1.207 起 Bedrock/Vertex 等无需 opt-in。</p>
+    <h3 id="s4-3">4.3 怎么交卷（默认两阶段 XML）<a class="anchor" href="#s4-3">#</a></h3>
+    <p>2.3 里「先便宜看一眼」就是这条。先把两个数字说清楚：它们<strong>不是</strong>送进分类器的材料有多长——transcript 该多长还是多长。它们是 API 的 <code>max_tokens</code>：<strong>模型这次最多能往回写多少</strong>。</p>
+    <p>分类器要交的卷其实就一行 XML：拦，还是放。默认拆成两趟，像安检：先让它吐一个字，大多数情况到此结束；只有说「要拦」才再给篇幅让它把理由写清楚。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>stage1（快）</th><th>stage2（深查）</th></tr></thead>
+        <tbody>
+          <tr><td>什么时候跑</td><td>默认先跑</td><td>只有 stage1 说拦，或卷面解析失败，才打</td></tr>
+          <tr><td>允许写多长</td><td><code>max_tokens: 64</code></td><td><code>max_tokens: 8192</code>（2.1.88 是 4096）</td></tr>
+          <tr><td>什么时候停</td><td>生成到 <code>&lt;/block&gt;</code> 立刻掐掉（<code>stop_sequences</code>）</td><td>写完思考再判，不提前掐</td></tr>
+          <tr><td>交卷长什么样</td><td>只许 <code>&lt;block&gt;yes/no&lt;/block&gt;</code>，连 reason 都不写</td><td>先 <code>&lt;thinking&gt;</code>，再 <code>&lt;block&gt;</code>；拦的时候还要带 category / reason</td></tr>
+          <tr><td>干什么</td><td>绝大多数安全动作在这里放行</td><td>压误杀：stage1 宁可错拦，stage2 再按意图和 ALLOW 例外细看</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>GrowthBook <code>tengu_auto_mode_config.twoStageClassifier</code> 还能切一半：<code>'fast'</code> 只跑 stage1（放宽到 256，去掉提前掐断，好写下 reason）；<code>'thinking'</code> 跳过 stage1 直接深查。<code>getClassifierTemperature</code>（2.1.233 新增，未进导出表）读 <code>CLAUDE_CODE_AUTO_MODE_TEMPERATURE</code>，读不到默认 <code>1</code>（2.1.88 写死 <code>0</code>）。<code>getClassifierThinkingConfig</code> 对「拒收 <code>thinking: disabled</code>」的模型会再垫 2048；外部默认的 Sonnet 5 在豁免名单里，不垫。这和导出表里的 <code>getThinkingConfig</code> 不是同一个函数：后者管主循环的 <code>max_thinking_tokens</code> 层。</p>
+    <h4>为什么 64 够用</h4>
+    <p><code>&lt;block&gt;no&lt;/block&gt;</code> 大约 6 个 token。stage1 的提示写死了「整段回复必须从 <code>&lt;block&gt;</code> 开头，前面不许分析」。再加上 <code>stop_sequences: ['&lt;/block&gt;']</code>，模型刚写完闭合标签 API 就停。64 是给这句短答留的上限，不是给它写小作文的。如果每次 <code>git status</code> 都让模型写两千 token 的推理，分类器会把主循环拖死。</p>
+    <h4>例子：<code>git status</code> 只跑 stage1</h4>
+    <p>分类器看到的动作大概是 <code>{"Bash":"git status"}</code>。stage1 在整份材料末尾追加一句后缀（2.1.233 默认 <code>both</code> 模式）：</p>
+    <pre><code>Err on the side of blocking. Stage 1 does NOT apply user intent or ALLOW
+exceptions — stage 2 will handle those. Judge the action by its full effect
+— what it runs, sends, publishes, or enables — not its surface form.
+Block if ANY rule could apply. Your ENTIRE response MUST begin with &lt;block&gt;.</code></pre>
+    <p>模型回 <code>&lt;block&gt;no&lt;/block&gt;</code>。解析器读到 <code>no</code>，直接 <code>shouldBlock: false</code>，reason 记成 <code>"Allowed by fast classifier"</code>。stage2 根本不打。用户无感。</p>
+    <h4>例子：<code>rm -rf dist/</code> 先拦再放</h4>
+    <p>假设用户刚说「把 <code>dist/</code> 删掉」。stage1 <strong>不看用户意图</strong>（后缀写明了，意图留给 stage2）。删除长得像 SOFT BLOCK「Irreversible Local Destruction」，stage1 回 <code>&lt;block&gt;yes&lt;/block&gt;</code>。因为是 yes，才打 stage2。</p>
+    <p>两趟的 system + CLAUDE.md + transcript + 当前动作完全一样，只换最后一句后缀，所以 stage2 必中 prompt cache——贵的那份前缀已经付过一次。stage2 的后缀改成：先 <code>&lt;thinking&gt;</code>，再按完整流程判（含用户意图、ALLOW 例外）。它可能回：</p>
+    <pre><code>&lt;thinking&gt;
+SOFT BLOCK「Irreversible Local Destruction」命中。用户上一句点名了路径 dist/，
+满足 must name，例外成立。
+&lt;/thinking&gt;
+&lt;block&gt;no&lt;/block&gt;</code></pre>
+    <p>于是放行。如果用户只说了「删点文件」、没点名路径，stage2 会改成：</p>
+    <pre><code>&lt;block&gt;yes&lt;/block&gt;&lt;category&gt;Irreversible Local Destruction&lt;/category&gt;&lt;reason&gt;[Irreversible Local Destruction] 删除 dist/，用户未点名该路径&lt;/reason&gt;</code></pre>
+    <p>这就是「专门压误杀」：stage1 宁可错拦，stage2 才认真看人有没有授权。</p>
+    <h4>卷面格式（2.1.233）</h4>
+    <pre><code>&lt;block&gt;yes&lt;/block&gt;&lt;category&gt;Data Exfiltration&lt;/category&gt;&lt;reason&gt;[Data Exfiltration] …&lt;/reason&gt;
+&lt;block&gt;no&lt;/block&gt;</code></pre>
+    <p>拦的时候 reason 必须以规则名开头；放行不要 category / reason。标签对不上、yes/no 打架、解析失败，一律 fail-closed。2.1.88 没有 <code>&lt;category&gt;</code>。内部还有一条 severity 灰度（写 <code>&lt;severity&gt;0-100&lt;/severity&gt;</code>，50 为界），默认外部会话走上面的 yes/no。</p>
+    <h3>4.4 规则怎么判</h3>
+    <p>分类器读的不是代码里的 if/else，是一份系统提示词：</p>
+    <pre><code>看最后一条动作（展开 &amp;&amp; / 包装脚本 / 本会话写过的文件）
+  → HARD BLOCK？命中立刻拦。不看意图，ALLOW 也不算
+  → SOFT BLOCK？
+      没有 → 预备放行
+      有，且命中 ALLOW 例外 → 预备放行（例外只对 SOFT 有效）
+      有，没有例外 → 预备拦截
+  → 用户意图
+      预备放行但越过用户红线 → 拦
+      预备拦截：点名了规则要求的 must name 项 → 放；否则拦
+  → 放行前再做一次「规则列表是例子不是边界」</code></pre>
+    <p>点名动作不等于点名 must name 项。说「删文件」翻不过「必须点名那条路径」。外泄是 HARD，说多少次都翻不过。</p>
+    <h3>4.5 拦什么（2.1.233 外部默认）</h3>
+    <p>语义类别，不是正则。对照「动作实际在干什么」。</p>
+    <p><strong>HARD BLOCK</strong> 默认几乎就一条 <strong>Data Exfiltration</strong>（敏感数据出信任边界，看最终落点）。用户可在 <code>autoMode.hard_deny</code> 加。</p>
+    <p><strong>SOFT BLOCK</strong> 模板里 60+ 条，每条都有 <code>[named+specifics]</code>。按伤害归类：外部代码 / 生产共享 / 本地破坏 / 安全削弱 / 凭证与外泄周边 / 自修改与绕过 / 对外动作（含 Browser Exfil）。2.1.88 的「推默认分支就算拦」没了——改由 ALLOW 的 Git Push Destination 放行本仓库任意分支（含默认分支）；force-push 别人的提交仍归破坏类 SOFT。</p>
+    <h3>4.6 ALLOW 例外（SOFT 命中后的豁免）</h3>
+    <p><a href="#s4">§4.4</a> 走到 SOFT BLOCK 之后才看这张表。分类器已经觉得「这长得像要拦」，ALLOW 说「这种日常开发放过」。命中例外就<strong>必须放</strong>，不能再用「看起来严重」压回去。</p>
+    <p>两道门在前面：<strong>HARD 命中时这张表不看</strong>（<code>.env</code> 真密钥推到公开 gist，说这是 Local Operations 也翻不过外泄）。<strong>例外只开它点名的那一扇门</strong>——目的地、资源、操作是三扇不同的门。<code>Git Push Destination</code> 只开「推到本仓库哪个分支」，不开「提交里装什么」，也不开「force-push 别人的提交」。</p>
+    <h4>例子：<code>git push origin main</code></h4>
+    <p>2.1.88 有一条 SOFT「推默认分支就算拦」。2.1.233 改成 ALLOW <strong>Git Push Destination</strong>：推本仓库任意分支都普通，<code>main</code> 也算，光说「push」不用点名分支。</p>
+    <ul>
+      <li>提交里是普通代码 → 目的地被祝福，放行。</li>
+      <li>提交里夹了从 <code>~/.ssh</code> 拷出来的真密钥 → HARD 外泄仍拦。例外没开「内容」那扇门。</li>
+      <li><code>git push --force</code> 盖掉别人的提交 → 仍归破坏类 SOFT。</li>
+      <li>分支名本身是 <code>production</code> / <code>gh-pages</code> → 这条例外既不放也不拦，改由 Production Deploy 自己判。</li>
+    </ul>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>例外</th><th>放过的日常</th><th>不放</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Git Push Destination</strong>（2.1.233）</td><td>推进本仓库任意分支（含默认分支）</td><td>提交内容、force-push 别人的提交、名字像发布目标的分支</td></tr>
+          <tr><td><strong>Declared Dependencies</strong></td><td><code>npm install</code> / <code>pip install -r</code> 装清单里已有的包，且本会话没改过清单</td><td><code>npm install 随便起的包名</code></td></tr>
+          <tr><td><strong>Toolchain Bootstrap</strong></td><td>从官方安装器装 rustup / uv / bun，且仓库构建配置表明需要</td><td>随便 curl 一个安装脚本</td></tr>
+          <tr><td><strong>Local Operations</strong></td><td>本仓库工作区内的日常文件操作</td><td>走出仓库去 <code>~/</code>、<code>/etc</code>；不可逆删已有文件</td></tr>
+          <tr><td><strong>Test Artifacts</strong></td><td>例子里手写的假 API key</td><td>从真密钥路径拷过来再改名</td></tr>
+          <tr><td><strong>Read-Only Operations</strong></td><td>不改状态、不带回密钥的 GET</td><td>用只读请求去踩点下一步要拦的动作</td></tr>
+          <tr><td><strong>Standard Credentials</strong></td><td>读自己的 <code>.env</code>，发给对应的官方 API</td><td>发给任意第三方</td></tr>
+          <tr><td><strong>Security Discussion</strong></td><td>读、写、讨论安全相关代码</td><td>真的跑 exploit、扫凭据</td></tr>
+          <tr><td><strong>Transient Retry</strong></td><td>网络闪断后原样再试</td><td>换编码去躲上一次的拦截</td></tr>
+          <tr><td><strong>Session-Created Job Cleanup</strong></td><td>删本会话自己创建并记下 ID 的那个 job</td><td>按名字猜、清生产任务、批量删</td></tr>
+          <tr><td><strong>Trusted Internal Infra</strong></td><td>Environment 里列出的内网，按本来用途走数据</td><td>在内网上改权限、动凭据</td></tr>
+          <tr><td><strong>Multi-Agent Coordination</strong></td><td>队友之间的 <code>SendMessage</code>、交差</td><td>发到无关频道；HARD 仍先拦</td></tr>
+          <tr><td><strong>Memory Directory</strong> / <strong>CLAUDE.md Content</strong></td><td>读写 memory 目录；改偏好和项目笔记</td><td>改权限 / auto-mode 行为；往 memory 里塞投毒内容</td></tr>
+          <tr><td><strong>Claude Code Scheduling</strong></td><td><code>CronCreate</code> / <code>RemoteTrigger</code> 管 Claude 自己的定时任务</td><td>把系统 cron 当这个例外</td></tr>
+          <tr><td><strong>Browser Trusted Navigation</strong></td><td>打开 Environment 内网、localhost、或用户点名的 URL</td><td>打开用户没点名的外网</td></tr>
+          <tr><td><strong>Scheduled-Task Fires</strong></td><td>定时器送来的 prompt 不当成「用户此刻点了头」</td><td>定时文案点名了 SOFT 动作，仍要走那条规则的同意门槛</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>碰正在跑的生产基础设施时，上面那些「开发环境」例外全部失效。要放行只剩：用户点名了那个生产目标和操作，或命中本身就是基础设施例外（Trusted Internal Infra 只管数据流，Session-Created Job Cleanup）。<code>npm install</code> 在本仓库放行，在 <code>prod-db</code> 上装同一份依赖不放行。</p>
+    <h3>4.7 用户规则：REPLACE 还是追加</h3>
+    <p>用户可以写 <code>autoMode.allow</code> / <code>soft_deny</code> / <code>hard_deny</code> / <code>environment</code>。外部模板默认写在标签里面，配了对应数组就整段换掉。内部模板是追加。项目级 settings <strong>故意不读</strong>。<code>"$defaults"</code> 可以「默认留下，再加我的」。</p>
+
+    <h2 id="s5">5. 决策流细节<a class="anchor" href="#s5">#</a></h2>
+    <p>这一节发生在 <code>tool.checkPermissions()</code> <strong>已经返回 <code>ask</code></strong> 之后。deny / allow 规则都过完了，本来该弹权限框。模式是 auto时，权限主循环把这次 ask 截下来。这段在 <code>shouldAvoidPermissionPrompts</code> 之前跑，所以 headless 也走分类器。</p>
+    <pre><code>ask 进来
+  ├─ safetyCheck 且不可交给分类器 → 原样 ask（敏感路径必须人看）
+  ├─ requiresUserInteraction 且不是「AUQ 交给分类器」→ 原样 ask
+  ├─ acceptEdits 预检通过 → 放行（fastPath: acceptEdits）
+  ├─ 工具名在白名单 → 放行（fastPath: allowlist）
+  └─ 打分类器（默认 xml_2stage）
+       ├─ 放行 → allow，连续拒绝清零
+       ├─ 拦 + transcript 超限 → 回退人工（headless 直接 abort）
+       ├─ 拦 + 分类器挂了 → 默认 deny（fail-closed）
+       └─ 拦 + 真判决 → 计数；连续 3 / 会话 20 → 回退人工（headless abort）</code></pre>
+
+    <h3>5.1 先过几道门，根本不进分类器</h3>
+    <p><strong>safetyCheck</strong>：工具自己标了「这个 ask 是安全检查」且 <code>classifierApprovable</code> 为假，三道自动放行（acceptEdits / 白名单 / 分类器）全跳过，保持人工。headless 没有权限框，改成 deny。敏感文件路径走这条。</p>
+    <p><strong>需要真人交互的工具</strong>：<code>requiresUserInteraction()</code> 为真就保持 ask。<strong>例外</strong>：AskUserQuestion 在 <code>classifyAskUserQuestion</code> 为真时（读不到 GB 时默认真）跳过这道门，交给分类器。</p>
+    
+
+    <h3>5.2 acceptEdits 预检：复用「工作区内编辑」那套逻辑</h3>
+    <p>auto 自己没有「CWD 内写文件算安全」的实现。做法是<strong>临时撒谎</strong>：把 <code>mode</code> 改成 <code>acceptEdits</code>，再调一次同一个 <code>checkPermissions</code>。acceptEdits 的规则是：路径在启动时的工作目录里就 allow（<code>pathInAllowedWorkingPath</code>）。CWD 里改 <code>src/foo.ts</code> 会放行；改 <code>~/.ssh/config</code>、<code>/etc/hosts</code>、别的仓库不会，继续往下走。</p>
+    <p>放行时记遥测 <code>fastPath: 'acceptEdits'</code>，连续拒绝清零。预检自己抛错（除了用户中止）就当没这道门，掉进分类器。</p>
+    <p><strong>Agent 和 REPL 不走这道门</strong>。它们在 acceptEdits 下会直接 allow——REPL 的 JS 胶水里可能夹着 VM 逃逸，分类器必须看到整段胶水，不能只看见里面套的 Read/Bash。所以这两样跳过预检，去分类器。</p>
+
+    <h3>5.3 白名单：按工具名跳过，不含任何写工具</h3>
+    <p>预检没放行，再看工具名在不在白名单。在就放行，记 <code>fastPath: 'allowlist'</code>。这是名字集合，不看参数。</p>
+    <p>只读、任务元数据、Plan 切换、Sleep 仍在。<strong>SendMessage 不在名单里</strong>（2.1.222 起走分类器）。Chrome / Browser MCP 的只读动作也进了白名单。<code>CLASSIFY_EDITS</code> 默认关。</p>
+    <p><strong>没有 Edit / Write / Bash</strong>。写文件走 5.2：CWD 内预检放行，CWD 外进分类器。Bash 一律分类器（除非前面的 allow 规则已经放了，且没开 <code>classifyAllShell</code>）。</p>
+
+    <h3>5.4 分类器拦下来之后：计数、回退、fail-closed</h3>
+    <p>走到这里才真正打 API。三种结果不一样。</p>
+    <p><strong>放行</strong>：<code>shouldBlock: false</code> → allow，<code>recordSuccess</code> 把连续拒绝清零。会话总拒绝不动。</p>
+    <p><strong>真的拦</strong>：<code>recordDenial</code>，连续和总数都 +1。返回给主模型的话是：</p>
+    <pre><code>Permission for this action has been denied. Reason: &lt;分类器的 reason&gt;.
+可以用别的工具合理替代（比如 head 代替 cat），
+但不要恶意绕过（别用跑测试当借口去执行非测试动作）。
+若这个能力对完成任务是必需的，停下向用户解释，让人决定。</code></pre>
+    <p>计数存在 <code>appState.denialTracking</code>。异步子代理的 <code>setAppState</code> 是空操作，改走 <code>localDenialTracking</code> 就地改。</p>
+    <p><strong>达限回退</strong>：连续 3 次，或本会话累计 20 次。任一到了就不再让分类器死循环：</p>
+    <ul>
+      <li>交互：改回 <code>ask</code>，警告「连续 N 次 / 本会话 N 次被拦，先看 transcript」。打到 20 次上限时把两个计数都清零，人看完还能继续。</li>
+      <li>headless：直接 <code>AbortError: too many classifier denials in headless mode</code>。没人点框，再试也是死循环。</li>
+    </ul>
+    <p>快路径放行也算成功，连续计数会清。所以「读文件 → 被拦的 Bash → 再读文件 → 再 Bash」不会把连续计数叠满。</p>
+    <p><strong>transcript 超限</strong>（确定性 400）：对话只增不减，重试必炸。不加拒绝计数。交互回退人工；headless 直接 abort。</p>
+    <p>分类器<strong>没给出判决</strong>（API 错、超时、中止）默认 deny。</p>
+
+    <h2 id="s6">6. 模式转换与入口<a class="anchor" href="#s6">#</a></h2>
+    <p>上一节是一次工具调用怎么判。这一节是<strong>怎么进、怎么出</strong> auto：启动选模式、Shift+Tab 轮转、进门时剥掉会绕过分类器的 allow 规则、以及把规则 dump 出来看的 CLI。</p>
+
+    <h3>6.1 启动时谁赢</h3>
+    <p><code>initialPermissionModeFromCLI</code> 先组一个有序列表，<strong>第一个合法的赢</strong>：</p>
+    <ol>
+      <li><code>--dangerously-skip-permissions</code> → <code>bypassPermissions</code>。组织策略（<code>tengu_disable_bypass_permissions_mode</code>）或 <code>permissions.disableBypassPermissionsMode</code> 开着就跳过，并提示被禁了。</li>
+      <li><code>--permission-mode auto</code> → <code>auto</code>。断路器已经是 <code>disabled</code> 就不当它存在，掉到下一项。</li>
+      <li><code>settings.permissions.defaultMode</code>。写成 <code>auto</code> 同样过断路器。远程会话（<code>CLAUDE_CODE_REMOTE</code>）只认 <code>acceptEdits</code> / <code>plan</code> / <code>default</code>，settings 里的 bypass 或 auto 会被丢掉，免得远程环境被静默提权。</li>
+    </ol>
+    <p>列表空了就回 <code>default</code>（2.1.200 改名 Manual）。账号策略把新会话默认设成 auto，走的是第 3 项，不是 Shift+Tab。</p>
+    <p>进了 REPL 之后，Shift+Tab 走 <code>getNextPermissionMode</code>。2.1.233 外部和内部同一条环，不再给 ant 开捷径：</p>
+    <pre><code>default → acceptEdits → plan →（有 bypass 就多一档）→ auto → 回到 default</code></pre>
+    <p>auto <strong>默认就在环上</strong>。2.1.88 要 GrowthBook 写成 <code>enabled</code>、或用户已经 opt-in，转盘才露出 auto。2.1.233 把「转盘里有没有」和「能不能显式进」收成同一道门：没熔断、settings 没关、模型支持，就进环。<code>tengu_auto_mode_config.enabled</code> 读不到时默认就是 <code>enabled</code>。打开就能 Shift+Tab 转到 auto，不用先设 flag、也不用先同意一次。</p>
+
+    <h3>6.2 进 auto 时剥掉会绕过分类器的 allow</h3>
+    <p><strong>剥 = 暂时让这些 always-allow 失效，调用去走分类器。不是把它们直接放行。</strong></p>
+    <p>权限流水线里，整工具 always-allow 在分类器<strong>前面</strong>（step 2b <code>toolAlwaysAllowedRule</code>）。settings 里如果留着 <code>Bash(*)</code>，不剥的话所有 Bash 在分类器看到之前就过了——auto 等于没开。所以进 auto 时先把这类规则从生效的 <code>alwaysAllowRules</code> 拿掉，塞进 <code>strippedDangerousRules</code> 暂存。用户磁盘上的 settings 不动。退出 auto 再按来源加回去。</p>
+    <p><code>Bash(*)</code> 在 auto 里：<code>ls</code> 和 <code>curl | bash</code> 都要过分类器。切回 Manual，settings 里那条 <code>Bash(*)</code> 又生效。</p>
+    <p>被当成危险、会剥掉的 always-allow：</p>
+    <ul>
+      <li><code>Bash</code> / <code>Bash(*)</code> / <code>Bash()</code>：等于所有命令。</li>
+      <li>解释器前缀：<code>Bash(python:*)</code>、<code>node:*</code>、<code>npx:*</code>、<code>ssh:*</code> 等（<code>DANGEROUS_BASH_PATTERNS</code>）。ant 额外剥 <code>curl</code> / <code>kubectl</code> / <code>gh api</code> 这类。</li>
+      <li><code>PowerShell(*)</code>，以及 <code>iex</code> / <code>Start-Process</code> / <code>pwsh</code> 等。</li>
+      <li><strong>任何</strong> <code>Agent(...)</code> allow：否则子代理 spawn 时分类器看不到 prompt，委托攻击直接过。</li>
+      <li>ant 的 <code>Tmux</code>：<code>send-keys</code> 等于再开一层任意 shell。</li>
+    </ul>
+    <p>窄规则比如 <code>Bash(git status)</code> 不在剥离名单里，进 auto 仍会在 2b 先放行，分类器看不到。CLI、Shift+Tab、SDK 改模式都走同一个 <code>transitionPermissionMode</code>，进出不会漏剥或漏还。</p>
+    <p>2.1.88 <strong>不剥</strong> <code>Edit(**)</code>。CWD 内编辑本来就走 acceptEdits 预检；用户自己写的 Edit always-allow 仍会在 2b 放行。旧笔记写成「剥 Edit(**)」和源码不符。</p>
+
+    <h3>6.3 <code>claude auto-mode</code> 子命令</h3>
+    <p>规则是提示词，人眼难看清「分类器实际吃到什么」。四个只读/复位命令：</p>
+    <ul>
+      <li><code>defaults</code>：解析外部模板 <code>&lt;user_*_to_replace&gt;</code> 里的 bullets，dump 出厂 allow / soft_deny / environment。</li>
+      <li><code>config</code>：生效配置。某一段用户写过就整段 REPLACE，没写过用默认。和 <code>buildYoloSystemPrompt</code> 同一套语义。</li>
+      <li><code>critique [--model]</code>：把用户规则 + 完整分类器提示词送给另一个 LLM，按清晰 / 完备 / 冲突 / 可执行四维挑毛病。没有自定义规则就提示去改 settings。</li>
+      <li><code>reset</code>（<strong>2.1.212 起</strong>）：恢复默认 auto-mode 配置，先确认，<code>--yes</code> 跳过。</li>
+    </ul>
+
+    <h2 id="s7">7. 版本变更历史<a class="anchor" href="#s7">#</a></h2>
+    <p>BLOCK 后来拆成 HARD / SOFT BLOCK：数据外泄强制拦截，删文件这类SOFT BLOCK能遵循用户意图。详情见 <a href="#s4">§4.4–4.6</a>。</p>
+
+    <h3>7.1 Environment：从「信谁」变成三类槽</h3>
+    <p>早期只有 5 条，全是「什么算可信」：Trusted repo、Source control、Trusted internal domains、Trusted cloud buckets、Key internal services。没填就当 External，外泄和外部代码规则最严。</p>
+    <p>后来扩到约 20 个，写成三类。分类器靠这些槽判断「这个目的地算不算外泄」「这个集群算不算生产」，空着时各自有保守默认：</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>类</th><th>默认</th><th>槽（举例）</th><th>干什么</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Context</strong></td><td>None / 保守假设</td><td>Organization、Cloud provider、Repository visibility、CI/CD deploy targets、Network posture</td><td>描述环境。可见性未核实时不当成「一定公开」，也不当成「一定私有」</td></tr>
+          <tr><td><strong>Trust</strong></td><td>没填 = 谁都不信</td><td>Trusted repo / domains / buckets / services、Internal package registry</td><td>白名单。填了，往这些地方推代码、装包才不算 External</td></tr>
+          <tr><td><strong>Sensitivity</strong></td><td>宽启发式（名字带 <code>prod</code> 就算）</td><td>Sensitive data locations、Sensitive remote targets、Protected IaC scopes</td><td>点名要保护的东西。不填也拦得住 <code>prod-db</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>填了之后，分类器能区分「推进自己的私有 org」和「推进公开 gist」，也能把名字带 <code>prod</code> 的 namespace 当生产。</p>
+
+    <h3>7.2 <code>CLAUDE_CODE_AUTO_MODE_*</code></h3>
+    <p>auto mode 有一批 <code>CLAUDE_CODE_AUTO_MODE_*</code> 旋钮。取值顺序一般是：环境变量 → 远程配置 → 默认值。看到名字不代表 <code>export</code> 就能开，不少只给内部或灰度用。曾经给 Bedrock / Vertex 用的 <code>CLAUDE_CODE_ENABLE_AUTO_MODE</code> 后来也不用了；CLI 的 <code>--enable-auto-mode</code> 更早就删了。</p>
+    <pre><code>CLAUDE_CODE_ENABLE_AUTO_MODE                      # 曾经的平台 opt-in，后来不用了
+CLAUDE_CODE_AUTO_MODE_MODEL                       # 分类器模型
+CLAUDE_CODE_AUTO_MODE_CLASSIFY_ASK_USER_QUESTION  # AskUserQuestion 也交给分类器
+CLAUDE_CODE_AUTO_MODE_CLASSIFY_EDITS              # 编辑操作也过分类器
+CLAUDE_CODE_AUTO_MODE_EDIT_REMOVAL / _CAP         # 编辑剥离 / 上限
+CLAUDE_CODE_AUTO_MODE_EXTERNAL_PERMISSIONS        # 走外部权限模板
+CLAUDE_CODE_AUTO_MODE_GIT_STATUS / _LIMIT / _UPLOADS  # 把 git status 塞进分类器上下文
+CLAUDE_CODE_AUTO_MODE_OUTCOME_CODES               # 分类器结果码
+CLAUDE_CODE_AUTO_MODE_PRIOR_ASSISTANT_CONTEXT     # transcript 是否带上一条 assistant 上下文
+CLAUDE_CODE_AUTO_MODE_REPO_VISIBILITY             # 探测仓库公开/私有
+CLAUDE_CODE_AUTO_MODE_TEMPERATURE                 # 分类器温度
+CLAUDE_CODE_BG_CLASSIFIER_MODEL                   # 后台分类器模型
+CLAUDE_CODE_CLASSIFIER_SUMMARY                    # 分类器摘要</code></pre>
+
+
+    <h2 id="s8">8. 可借鉴的模式<a class="anchor" href="#s8">#</a></h2>
+    <ol>
+      <li>快路径金字塔：白名单 → 低成本预检 → 昂贵判断</li>
+      <li>两阶段分类（2.1.233 默认）：先用 64 token 的短<strong>输出</strong>快放行，只有可疑才用 8192 token 写思考再复核（2.1.88 深查是 4096）</li>
+      <li>Fail-closed 默认，gate 可切 fail-open</li>
+      <li>拒绝逃生舱：3 / 20 回退人工</li>
+      <li>只给分类器看工具调用，不给模型文本</li>
+      <li>stage2 复用 stage1 前缀打 cache</li>
+      <li><code>claude auto-mode defaults/config/critique/reset</code> + 遥测比</li>
+      <li>默认规则包在替换标签里，<code>$defaults</code> 追加</li>
+    </ol>
+
+    <nav class="page-nav">
+      <a class="prev" href="./rewind.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">Rewind / Checkpoint</span>
+      </a>
+      <a class="next" href="./todo-tools-gating.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">Todo 工具门控</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

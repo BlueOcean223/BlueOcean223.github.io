@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>权限审核机制 · Claude Code 源码笔记</title>
+<meta name="description" content="useCanUseTool 决策主链路、规则来源与语法、路径/Bash 安全检查、ask 后的多路审批竞态、六种 permission mode。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>机制专题<span class="sep">/</span>权限审核机制</div>
+  <header class="page-head">
+    <span class="eyebrow">机制专题 · 08</span>
+    <h1>权限审核机制</h1>
+    <p class="lead">工具调用前的权限决策链路、规则来源、路径/Bash 安全检查,以及 ask 后的多路审批竞态。deny/ask/safetyCheck 始终优先于 bypass。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>决策主链路</a></li>
+        <li><a href="#s2"><span class="num">2</span>权限规则来源与语法</a></li>
+        <li><a href="#s3"><span class="num">3</span>路径权限的重点安全点</a></li>
+        <li><a href="#s4"><span class="num">4</span>Bash 权限</a></li>
+        <li><a href="#s5"><span class="num">5</span>ask 后的"竞态"处理</a></li>
+        <li><a href="#s6"><span class="num">6</span>permission modes</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. 决策主链路<a class="anchor" href="#s1">#</a></h2>
+    <p>工具执行前调用 <code>useCanUseTool()</code>,核心顺序是:</p>
+    <pre><code>useCanUseTool()
+  -&gt; hasPermissionsToUseTool()
+     -&gt; hasPermissionsToUseToolInner()
+        1. deny/ask rules
+        2. tool.checkPermissions(input, context)
+        3. bypass/acceptEdits/default/auto/dontAsk 等模式
+        4. allow rules
+        5. passthrough =&gt; ask
+  -&gt; allow: 直接执行
+  -&gt; deny: 记录并返回拒绝
+  -&gt; ask: 进入 interactive / coordinator / swarm / bridge / channel / hook / classifier 竞态</code></pre>
+    <p><code>Tool</code> 自己的 <code>checkPermissions()</code> 是安全第一道业务门,比如:</p>
+    <ul>
+      <li><code>Read/Edit/Write</code> 走路径权限与危险目录检查。</li>
+      <li><code>Bash</code> 会解析命令、拆 subcommand、匹配 prefix rule、读写/危险语义检查、sandbox 判断。</li>
+      <li><code>MCPTool</code> 按 server/tool 名称检查 MCP 权限。</li>
+      <li><code>SkillTool</code> 单独检查技能名 allow/deny。</li>
+      <li><code>AgentTool</code> 检查 <code>Agent(type)</code> deny rule。</li>
+    </ul>
+
+    <h2 id="s2">2. 权限规则来源与语法<a class="anchor" href="#s2">#</a></h2>
+    <p><code>utils/permissions/permissions.ts</code> 把 allow/deny/ask 规则按来源合并:</p>
+    <ul>
+      <li>policySettings</li>
+      <li>userSettings</li>
+      <li>projectSettings</li>
+      <li>localSettings</li>
+      <li>flagSettings</li>
+      <li>cliArg</li>
+      <li>command</li>
+      <li>session</li>
+    </ul>
+    <p>规则值经过 <code>permissionRuleValueFromString()</code> 解析,支持工具级规则、内容级规则,例如:</p>
+    <ul>
+      <li><code>Bash(git status:*)</code></li>
+      <li><code>Edit(/some/path/**)</code></li>
+      <li><code>Read(...)</code></li>
+      <li><code>Agent(code-reviewer)</code></li>
+      <li><code>Skill(commit)</code> / <code>Skill(review:*)</code></li>
+      <li><code>mcp__server</code> / <code>mcp__server__tool</code></li>
+    </ul>
+    <p>deny 优先级最高;ask 规则可强制弹窗;allow 在工具自身安全检查之后才生效。</p>
+
+    <h2 id="s3">3. 路径权限的重点安全点<a class="anchor" href="#s3">#</a></h2>
+    <p><code>utils/permissions/filesystem.ts</code> 的路径检查非常重:</p>
+    <ul>
+      <li>同时检查原始路径与 symlink resolved path。</li>
+      <li>UNC/network path、防 Windows ADS/短路径/long path prefix、shell expansion 变体。</li>
+      <li><code>.git</code>、<code>.claude</code>、shell profile、敏感配置等 safety check 会绕过 bypass/auto 的普通放行。</li>
+      <li>read 规则和 edit 规则分开;显式 read deny/ask 优先于"edit implies read"。</li>
+      <li>acceptEdits 只自动允许工作目录内写入。</li>
+      <li><code>.claude/**</code> 有 session-scoped 特殊放行,但不会永久广泛授权。</li>
+    </ul>
+
+    <h2 id="s4">4. Bash 权限<a class="anchor" href="#s4">#</a></h2>
+    <p><code>tools/BashTool/bashPermissions.ts</code> 做了多层判断:</p>
+    <ul>
+      <li>提取稳定 prefix,给用户建议可复用规则,避免保存整条临时命令。</li>
+      <li>compound command 最多拆 <code>MAX_SUBCOMMANDS_FOR_SECURITY_CHECK = 50</code>,超过则 ask,防 CPU/事件循环卡死。</li>
+      <li>拦截危险 prefix:裸 shell、解释器、<code>sudo</code>、<code>env</code>、<code>xargs</code>、<code>timeout</code> 等。</li>
+      <li>对 read-only / write / destructive 语义做 AST 和静态规则判断。</li>
+      <li>支持 speculative classifier:弹窗前最多等 2 秒让分类器自动批准。</li>
+      <li>sandbox 模式下部分 Bash 可自动允许。</li>
+    </ul>
+
+    <h2 id="s5">5. ask 后的"竞态"处理<a class="anchor" href="#s5">#</a></h2>
+    <p><code>hooks/toolPermission/handlers/interactiveHandler.ts</code> 中,一个 ask 请求会同时等待多个可能结果:</p>
+    <ul>
+      <li>本地 TUI 用户点击 allow/deny。</li>
+      <li>bridge/CCR 远程网页返回。</li>
+      <li>channel permission relay(Telegram/iMessage 等)返回 yes/no。</li>
+      <li>PermissionRequest hooks 返回 allow/deny/ask。</li>
+      <li>Bash classifier 异步批准。</li>
+      <li>swarm worker 把权限请求转发给 leader。</li>
+    </ul>
+    <p>所有路径用 <code>claim()</code>/resolve-once 保证只有第一个结果生效,并会取消其他 pending prompt。</p>
+
+    <h2 id="s6">6. permission modes<a class="anchor" href="#s6">#</a></h2>
+    <p>主要模式:</p>
+    <ul>
+      <li><code>default</code>:读工作目录通常允许,写/危险操作询问。</li>
+      <li><code>acceptEdits</code>:工作目录内编辑自动允许。</li>
+      <li><code>bypassPermissions</code>:跳过大部分权限,但 safetyCheck、content-specific ask/deny 仍可阻断。</li>
+      <li><code>dontAsk</code>:ask 转 deny,适合不可交互环境。</li>
+      <li><code>auto</code>：用分类器代替用户弹窗。默认两阶段 XML；HARD（外泄）翻不过，SOFT 才允许点名放行。AskUserQuestion 默认也交给分类器。失败 fail-closed。详见 <a href="./auto-mode-deep-dive.html">Auto Mode 深度解析</a>。</li>
+      <li><code>plan</code>:计划模式下部分权限策略变化,退出 plan 需要审批。</li>
+    </ul>
+
+    <nav class="page-nav">
+      <a class="prev" href="./memory-mechanism.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">Memory 机制</span>
+      </a>
+      <a class="next" href="./runtime-stability.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">长运行兜底与稳定性</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

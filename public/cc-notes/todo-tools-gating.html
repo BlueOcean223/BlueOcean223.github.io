@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Todo / 任务工具门控 · Claude Code 源码笔记</title>
+<meta name="description" content="TodoWrite 是 v1，Task 四件套是 v2，两套互斥。2.1.16 起默认 v2。2.1.233 起 Opus 4.8 / Sonnet 5 等新模型上两套都不给。三层门：isTodoV2Enabled、isTodoToolsEnabled、isTaskListToolsEnabled。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>版本对照<span class="sep">/</span>Todo 工具门控</div>
+  <header class="page-head">
+    <span class="eyebrow">版本对照 · 15</span>
+    <h1>Todo / 任务追踪工具的模型门控</h1>
+    <p class="lead">TodoWrite 是 v1，Task 四件套是 v2，两套互斥。2.1.16 起默认走 v2。2.1.233 起 Opus 4.8、Sonnet 5、Fable 5、Mythos 5 及更新家族上两套都不给模型；设置 <code>CLAUDE_CODE_ENABLE_TODO_TOOLS=1</code> 可恢复Task工具的提供。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>两套系统</a></li>
+        <li><a href="#s2"><span class="num">2</span>2.1.233 模型门控</a></li>
+        <li><a href="#s3"><span class="num">3</span>门控机制</a></li>
+        <li><a href="#s4"><span class="num">4</span>官方说明</a></li>
+        <li><a href="#s5"><span class="num">5</span>可借鉴点</a></li>
+        <li><a href="#s6"><span class="num">6</span>已知盲区</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. 两套系统<a class="anchor" href="#s1">#</a></h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th></th><th>TodoWrite（v1）</th><th>Task 四件套（v2）</th></tr></thead>
+        <tbody>
+          <tr><td>工具</td><td><code>TodoWrite</code></td><td><code>TaskCreate</code> / <code>Get</code> / <code>Update</code> / <code>List</code></td></tr>
+          <tr><td>数据</td><td><code>todos: [{id,status,subject}]</code>，按 agentId 存 appState</td><td>磁盘任务文件：taskId、status、owner、<code>blocks</code> / <code>blockedBy</code></td></tr>
+          <tr><td>2.1.233 <code>isEnabled</code></td><td><code>!isTodoV2Enabled() &amp;&amp; isTodoToolsEnabled()</code></td><td><code>isTodoV2Enabled() &amp;&amp; isTodoToolsEnabled()</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table class="timeline">
+        <thead><tr><th>版本</th><th>事实</th></tr></thead>
+        <tbody>
+          <tr><td>0.2.93</td><td>CHANGELOG：Todo 列表。v1 引入。</td></tr>
+          <tr><td>1.0.0</td><td>bundle 只有 TodoWrite，无 TaskCreate / TaskList。</td></tr>
+          <tr><td>2.1.16</td><td>CHANGELOG：new task management system，含 dependency tracking。v2 引入。</td></tr>
+          <tr><td>2.1.19</td><td><code>CLAUDE_CODE_ENABLE_TASKS</code>；changelog：设 <code>false</code> 暂时保留旧系统。</td></tr>
+          <tr><td>2.1.88</td><td><code>ENABLE_TASKS</code> 为真则强制 v2，否则交互走 v2、非交互走 v1。<code>TodoWrite.isEnabled = !isTodoV2Enabled()</code>。</td></tr>
+          <tr><td>2.1.229–232</td><td><code>ENABLE_TASKS !== false</code>，默认全会话 v2；<code>ENABLE_TASKS=0</code> 回退 v1。2.1.232 叠 <code>tengu_vellum_ash</code>。</td></tr>
+          <tr><td>2.1.233</td><td>叠加 <code>isTodoToolsEnabled()</code>。<code>vellum_ash</code> 消失，<code>rosy_wren</code> 出现。定义仍在 bundle 里。</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code>// 2.1.88 TodoWriteTool
+isEnabled() { return !isTodoV2Enabled() }
+
+// 2.1.88 utils/tasks.ts
+export function isTodoV2Enabled(): boolean {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_TASKS)) return true
+  return !getIsNonInteractiveSession()
+}
+
+// 2.1.233
+function isTodoV2Enabled() {
+  return V.CLAUDE_CODE_ENABLE_TASKS !== false
+}</code></pre>
+    <p>官方 tools-reference：未门控模型（如 Opus 4.7）默认给 Task 四件套；<code>TodoWrite</code> 要在已有任务工具的会话里设 <code>ENABLE_TASKS=0</code>。</p>
+
+    <h2 id="s2">2. 2.1.233 模型门控<a class="anchor" href="#s2">#</a></h2>
+    <p><strong>2.1.233（2026-08-14）</strong>：Opus 4.8、Sonnet 5、Fable 5、Mythos 5 及同家族更新模型上，Task 四件套和 TodoWrite 默认都不提供。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>字符串</th><th>2.1.229</th><th>2.1.231</th><th>2.1.232</th><th>2.1.233</th></tr></thead>
+        <tbody>
+          <tr><td><code>CLAUDE_CODE_ENABLE_TODO_TOOLS</code></td><td>0</td><td>0</td><td>0</td><td><strong>2</strong></td></tr>
+          <tr><td><code>tengu_rosy_wren</code></td><td>0</td><td>0</td><td>0</td><td><strong>1</strong></td></tr>
+          <tr><td><code>tengu_vellum_ash</code></td><td>—</td><td>—</td><td>1</td><td><strong>0</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>2.1.229–232 没有模型家族表，也没有 <code>ENABLE_TODO_TOOLS</code> / <code>rosy_wren</code>。2.1.233 对 <code>claude-opus-5</code> 的 capture：20 个工具，无 Task 四件套、无 TodoWrite。</p>
+
+    <h2 id="s3">3. 门控机制<a class="anchor" href="#s3">#</a></h2>
+
+    <h3>3.1 模型表</h3>
+    <pre><code>const TASK_TRACKING_GATED_FAMILIES = [
+  ["opus",   [4, 8]],
+  ["sonnet", [5]],
+  ["fable",  [5]],
+  ["mythos", [5]],
+]
+
+// modelMeetsFamilyMin(id, table)：claude-&lt;family&gt;-&lt;ver&gt; 逐位比较，整体 &gt;=
+// isUngatedForTaskTracking(id) = !modelMeetsFamilyMin(id, TASK_TRACKING_GATED_FAMILIES)</code></pre>
+
+    <h3>3.2 三层</h3>
+    <pre><code>isBgOrTakeover()              // 后台会话 / bgTakeover
+todoToolsOptIn()              // SDK / 宿主 opt-in
+getMainLoopCanonicalModel()
+
+isTodoV2Enabled()             // ENABLE_TASKS !== false
+isTodoToolsEnabled()          // 后台 / SDK / 老模型 / env / rosy_wren
+isTaskListToolsEnabled()      // isTodoV2Enabled &amp;&amp; isTodoToolsEnabled</code></pre>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>函数</th><th>管什么</th><th>为真时</th></tr></thead>
+        <tbody>
+          <tr><td><code>isTodoV2Enabled</code></td><td>v1 / v2 互斥</td><td>Task 系列候选；TodoWrite 候选关掉</td></tr>
+          <tr><td><code>isTodoToolsEnabled</code></td><td>模型 + 场景 + 逃生门</td><td>这套任务追踪工具允许出现</td></tr>
+          <tr><td><code>isTaskListToolsEnabled</code></td><td>Task 四件套 <code>isEnabled</code></td><td>两扇门都开</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>TodoWrite 的 <code>isEnabled</code> 是 <code>!isTodoV2Enabled() &amp;&amp; isTodoToolsEnabled()</code>。</p>
+
+    <h3>3.3 挂载点</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>工具</th><th>2.1.232</th><th>2.1.233</th></tr></thead>
+        <tbody>
+          <tr><td>TaskCreate / Get / Update / List</td><td><code>isTodoV2Enabled() &amp;&amp; !tengu_vellum_ash</code></td><td><code>isTaskListToolsEnabled()</code></td></tr>
+          <tr><td>TodoWrite</td><td><code>!isTodoV2Enabled() &amp;&amp; !tengu_vellum_ash</code></td><td><code>!isTodoV2Enabled() &amp;&amp; isTodoToolsEnabled()</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>定义、schema、prompt 都还在 bundle 里——<code>isEnabled() === false</code> 时对模型不可见。</p>
+
+    <h2 id="s4">4. 官方说明<a class="anchor" href="#s4">#</a></h2>
+    <p><a href="https://code.claude.com/docs/en/tools-reference#task-tool-availability">tools-reference · Task tool availability</a>：</p>
+    <blockquote>
+      <p>Those models keep track of multi-step work without a written checklist, and the tools’ definitions and reminders take up context, so Claude Code leaves them out. Without them, Claude adds nothing to the task list while it works.</p>
+      <p>这些模型能跟住多步工作，不需要书面清单；工具的定义和提醒会占上下文，所以 Claude Code 把它们拿掉。没有这些工具时，Claude 工作时不会往任务列表里写任何东西。</p>
+    </blockquote>
+    <p><a href="https://code.claude.com/docs/en/agent-sdk/todo-tracking">Agent SDK · Todo tracking</a>：</p>
+    <blockquote>
+      <p>Claude tracks multi-step work without a written todo list, and Claude Code leaves the task-tracking tools out of sessions by default. You don’t need anything on this page for Claude to work through multi-step tasks on those models.</p>
+      <p>在这些模型上，Claude 不靠书面 todo 列表就能跟住多步工作，Claude Code 默认不把任务追踪工具放进会话。这些模型上走完多步任务，不需要本页的任何内容。</p>
+    </blockquote>
+    <p>代码两处一起停：工具 <code>isEnabled</code> 为 false，<code>task_reminder</code> 先查 <code>isTaskListToolsEnabled()</code>。</p>
+    <p>例外：后台 / bgTakeover 始终给；SDK <code>todoToolsOptIn()</code>；未进门控表的模型走 v1/v2 互斥。逃生门：env + <code>rosy_wren</code>。</p>
+
+    <h3>ENABLE_TODO_TOOLS=1</h3>
+    <p>env 只把 <code>isTodoToolsEnabled()</code> 短路为 true。Task 四件套还要 v2 开着；TodoWrite 还要 <code>ENABLE_TASKS=0</code>。</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>场景</th><th>TASKS</th><th>TODO_TOOLS</th><th>TodoWrite</th><th>Task 系列</th></tr></thead>
+        <tbody>
+          <tr><td>老模型默认</td><td>未设</td><td>未设</td><td>✗</td><td><strong>✓</strong></td></tr>
+          <tr><td>老模型回退 v1</td><td>0</td><td>未设</td><td><strong>✓</strong></td><td>✗</td></tr>
+          <tr><td>新模型默认</td><td>未设</td><td>未设</td><td>✗</td><td>✗</td></tr>
+          <tr><td>新模型 + env</td><td>未设</td><td>1</td><td>✗</td><td><strong>✓</strong></td></tr>
+          <tr><td>新模型 + env + 回退 v1</td><td>0</td><td>1</td><td><strong>✓</strong></td><td>✗</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2 id="s5">5. 可借鉴点<a class="anchor" href="#s5">#</a></h2>
+    <ol>
+      <li><code>isEnabled()</code> 动态门控，比编译期裁剪灵活</li>
+      <li><code>claude-&lt;family&gt;-&lt;ver&gt;</code> 逐位比较</li>
+      <li>v1 / v2 互斥 + env 回退</li>
+      <li>后台/无人值守先于模型家族表</li>
+      <li>env（用户）+ GrowthBook（厂商）两扇逃生门</li>
+    </ol>
+
+    <nav class="page-nav">
+      <a class="prev" href="./auto-mode-deep-dive.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">Auto Mode</span>
+      </a>
+      <a class="next" href="./enterprise-patterns.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">企业级设计模式</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 2.1.88 源码 + 2.1.233-appjs</p>
+</footer>
+
+</body>
+</html>

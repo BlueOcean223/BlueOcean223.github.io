@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rewind / Checkpoint 机制 · Claude Code 源码笔记</title>
+<meta name="description" content="深挖 /rewind（别名 /checkpoint、/undo）：对话截断与文件快照回滚两个正交维度，由同一 messageId 锚定；file history 的三阶段防 race 写入、copyFile+hash 命名+版本号存储、resume 的 hard link 迁移。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>机制专题<span class="sep">/</span>Rewind / Checkpoint 机制</div>
+  <header class="page-head">
+    <span class="eyebrow">机制专题 · 12</span>
+    <h1>Rewind / Checkpoint 机制</h1>
+    <p class="lead">深挖 <code>/rewind</code>（别名 <code>/checkpoint</code>、<code>/undo</code>）：它如何把代码和 / 或对话恢复到之前的某个时间点。现行行为以 2.1.233 为准，<code>/rewind</code> 仍在 slash 表。</p>
+  </header>
+
+  <div class="prose">
+
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>入口与触发</a></li>
+        <li><a href="#s2"><span class="num">2</span>MessageSelector：选消息 + 选范围</a></li>
+        <li><a href="#s3"><span class="num">3</span>对话恢复：rewindConversationTo</a></li>
+        <li><a href="#s4"><span class="num">4</span>代码恢复：fileHistoryRewind</a></li>
+        <li><a href="#s5"><span class="num">5</span>文件快照怎么来的（写入侧）</a></li>
+        <li><a href="#s6"><span class="num">6</span>备份存储格式</a></li>
+        <li><a href="#s7"><span class="num">7</span>预览与无损快速路径</a></li>
+        <li><a href="#s8"><span class="num">8</span>resume / 跨会话迁移</a></li>
+        <li><a href="#s9"><span class="num">9</span>开关</a></li>
+        <li><a href="#s10"><span class="num">10</span>关键文件与设计要点</a></li>
+      </ol>
+    </nav>
+
+    <div class="callout">
+      <span class="callout-title">一句话结论</span>
+      <p><code>/rewind</code> 的本质是<strong>两个正交维度的恢复</strong>：<strong>对话恢复</strong>把消息历史截断回某条 user message 之前，<strong>代码恢复</strong>用 file history 把磁盘文件回滚到该消息对应的快照。两者由<strong>同一个 messageId 锚定</strong>，但可以分别执行（恢复代码 / 恢复对话 / 两者都恢复）。文件快照不是按时间存的，而是<strong>按 message 存的</strong>——所以"回到那条消息" = 对话截断到那 + 文件恢复到那一刻。</p>
+    </div>
+
+    <div class="panel">
+      <h3>相关阅读</h3>
+      <p>
+        <a href="./context-compact-checkpoint.html">上下文管理、压缩与 checkpoint</a>（其中区分了三类 checkpoint）·
+        <a href="./startup-runtime.html">启动与运行时</a>（query 主循环、resume）
+      </p>
+    </div>
+
+    <h2 id="s1">1. 入口与触发<a class="anchor" href="#s1">#</a></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>入口</th><th>路径</th><th>行为</th></tr></thead>
+      <tbody>
+        <tr><td><code>/rewind</code> 命令</td><td><code>commands/rewind/index.ts</code>、<code>rewind.ts</code></td><td>local 命令，不支持非交互；<code>call()</code> 只调 <code>context.openMessageSelector()</code> 并返回 <code>{ type: 'skip' }</code></td></tr>
+        <tr><td>键位</td><td><code>keybindings</code>（MessageSelector context）</td><td><code>handleShowMessageSelector</code> toggle 选择器</td></tr>
+        <tr><td>消息操作栏 edit</td><td><code>REPL.tsx</code> <code>messageActionCaps.edit</code></td><td>选中某条历史消息"编辑重发"，走同一套 rewind 逻辑</td></tr>
+        <tr><td>headless / SDK</td><td><code>cli/print.ts</code></td><td>直接调 <code>fileHistoryGetDiffStats</code> + <code>fileHistoryRewind</code></td></tr>
+      </tbody>
+    </table></div>
+    <p><code>openMessageSelector</code> 在 <code>REPL.tsx</code> 里就是 <code>setIsMessageSelectorVisible(true)</code>，渲染 <code>&lt;MessageSelector&gt;</code> 组件。</p>
+
+    <h2 id="s2">2. MessageSelector：选消息 + 选范围<a class="anchor" href="#s2">#</a></h2>
+    <p><code>components/MessageSelector.tsx</code>：</p>
+    <ul>
+      <li>列出所有可选 user message（<code>selectableUserMessagesFilter</code>），外加一条"当前 prompt"的虚拟消息。</li>
+      <li>选中一条后，根据该 messageId 是否有文件快照（<code>fileHistoryCanRestore</code>）给出恢复选项：
+        <ul>
+          <li><code>both</code>（默认）：恢复代码 + 对话</li>
+          <li><code>conversation</code>：只恢复对话</li>
+          <li><code>code</code>：只恢复代码</li>
+          <li><code>summarize</code> / <code>summarize_up_to</code>：从这里 / 到这里做<strong>部分压缩</strong>（partial compact，不是 rewind）</li>
+          <li><code>nevermind</code>：取消</li>
+        </ul>
+      </li>
+      <li>选消息时会先用 <code>fileHistoryGetDiffStats</code>（dry-run）算出"回退会改几个文件、+/- 多少行"，显示给用户确认。</li>
+    </ul>
+    <p><code>both</code> 时按顺序调 <code>onRestoreCode</code>（文件）→ <code>onRestoreMessage</code>（对话），各自独立 try/catch，分别报错。</p>
+
+    <h2 id="s3">3. 对话恢复：rewindConversationTo<a class="anchor" href="#s3">#</a></h2>
+    <p><code>REPL.tsx</code> 的 <code>rewindConversationTo(message)</code> 核心只有一行截断，但连带重置了一堆易 stale 的状态：</p>
+    <pre><code>setMessages(prev.slice(0, messageIndex))   // 截断到该消息之前
+→ setConversationId(randomUUID())          // 新会话 id
+→ resetMicrocompactState()                 // 防 stale pinned cache edits 引用被截断的 tool_use_id
+→ resetContextCollapse()                   // staged queue / ID map 引用了 stale uuid，全部重置
+→ 恢复该 message 的 permissionMode
+→ 清 promptSuggestion</code></pre>
+    <p><code>restoreMessageSync</code> 进一步把<strong>该消息的文本和图片重新填回输入框</strong>（<code>textForResubmit</code> + pasted images），所以 rewind 同时是"编辑后重发"的入口——你回到那条 prompt，改一改再发。</p>
+    <div class="callout">
+      <span class="callout-title">细节：两条 rewind 路径的渲染时序</span>
+      <p>MessageSelector 路径用 <code>setImmediate</code> 延迟 rewind，让 "Interrupted" 消息先渲染到 static output，否则它会残留在屏幕顶部。中断自动恢复路径则用同步版，让 React 把 abort 的 <code>setMessages</code> 和 rewind 批成一次渲染，避免闪烁。</p>
+    </div>
+
+    <h2 id="s4">4. 代码恢复：fileHistoryRewind<a class="anchor" href="#s4">#</a></h2>
+    <p><code>utils/fileHistory.ts</code> 的 <code>fileHistoryRewind(updater, messageId)</code>：</p>
+    <ol>
+      <li>用 no-op updater 捕获当前 <code>FileHistoryState</code>（rewind 是纯文件系统副作用，不改 state）。</li>
+      <li><code>findLast</code> 找到该 messageId 对应的 <code>targetSnapshot</code>。</li>
+      <li><code>applySnapshot</code>：遍历所有 tracked files：
+        <ul>
+          <li>该版本备份为 <code>null</code>（文件当时不存在）→ <code>unlink</code> 删除现在的文件。</li>
+          <li>备份有内容 → 若当前文件与备份不同（<code>checkOriginFileChanged</code>）→ <code>restoreBackup</code>（copyFile 覆盖 + chmod 还原权限）。</li>
+          <li>只动<strong>确实变了</strong>的文件（基于 stat 的 mode/size/mtime，必要时再比内容）。</li>
+        </ul>
+      </li>
+    </ol>
+
+    <h2 id="s5">5. 文件快照怎么来的（写入侧）<a class="anchor" href="#s5">#</a></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>函数</th><th>时机</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><code>fileHistoryMakeSnapshot(messageId)</code></td><td>每个 turn（一条 user message）</td><td>开一个新快照，关联 messageId，回填本轮 tracked 文件备份</td></tr>
+        <tr><td><code>fileHistoryTrackEdit(path, messageId)</code></td><td>Edit/Write/新建文件<strong>执行前</strong></td><td>把文件当前内容备份成 v1，使"编辑前"状态可回滚</td></tr>
+      </tbody>
+    </table></div>
+    <p><code>fileHistoryTrackEdit</code> 是<strong>三阶段</strong>设计，防 speculative write 和并发 race：</p>
+    <pre><code>Phase 1: 检查最近快照是否已跟踪该文件（已跟踪则不动 v1，防覆盖）
+Phase 2: async createBackup(v1)
+Phase 3: commit，再次 re-check（可能有另一个 trackEdit 抢先）</code></pre>
+    <p><code>fileHistoryMakeSnapshot</code> 同样分三阶段：capture state（no-op updater）→ async 备份所有 tracked 文件（比对 mtime/size 决定复用旧备份还是建新版本）→ commit 新快照。</p>
+
+    <h2 id="s6">6. 备份存储格式<a class="anchor" href="#s6">#</a></h2>
+    <pre><code>{configDir}/file-history/{sessionId}/{sha256(filePath)[:16]}@v{version}</code></pre>
+    <ul>
+      <li>用 <code>copyFile</code> 而不是 <code>readFileSync + writeFileSync</code>——避免把大文件读进 JS heap 导致 OOM。</li>
+      <li><code>chmod</code> 保留原文件权限。</li>
+      <li>路径在 state 里用<strong>相对路径</strong>（<code>maybeShortenFilePath</code>）做 key，减少 session storage 占用。</li>
+      <li><code>MAX_SNAPSHOTS = 100</code>，超出后 LRU 丢最老；<code>snapshotSequence</code> 单调递增计数器即使快照被淘汰也不回退，给 <code>useGitDiffStats</code> 当活动信号。</li>
+      <li><code>null</code> 备份是一个显式的"该版本文件不存在"标记，使 rewind 能"删除一个回退点之后才创建的文件"。</li>
+    </ul>
+
+    <h2 id="s7">7. 预览与无损快速路径<a class="anchor" href="#s7">#</a></h2>
+    <ul>
+      <li><code>fileHistoryGetDiffStats</code>（dry-run）：算回退会改哪些文件、insertions/deletions，用 <code>diffLines</code>，供 UI 显示。</li>
+      <li><code>fileHistoryHasAnyChanges</code>：轻量 bool 版，早退，不算行数，用于"要不要弹确认框"的判断。</li>
+      <li><strong>无损直接 rewind</strong>：消息操作栏 edit 时，若 <code>noFileChanges</code>（回退不改任何文件）且 <code>onlySynthetic</code>（该消息后只有合成消息），直接 rewind 不弹确认；否则才打开 MessageSelector 确认。</li>
+    </ul>
+
+    <h2 id="s8">8. resume / 跨会话迁移<a class="anchor" href="#s8">#</a></h2>
+    <ul>
+      <li>快照记进 transcript（<code>recordFileHistorySnapshot</code>）；resume 时 <code>fileHistoryRestoreStateFromLog</code> 重建 <code>FileHistoryState</code>（含 abs→rel 路径迁移），<code>useFileHistorySnapshotInit</code> 在 mount 时一次性恢复。</li>
+      <li><code>copyFileHistoryForResume</code>：换 session id 后，用 <strong>hard link</strong>（失败 fallback <code>copyFile</code>）把旧 session 的备份文件迁到新 session 目录，这样 resume 后仍能 rewind。EEXIST 跳过，ENOENT 报错。</li>
+      <li><code>restoreWorktreeForResume</code> / <code>exitRestoredWorktree</code>（<code>sessionRestore.ts</code>）：resume 时还会处理 worktree 工作目录的恢复与退出。</li>
+    </ul>
+
+    <h2 id="s9">9. 开关<a class="anchor" href="#s9">#</a></h2>
+    <ul>
+      <li>settings <code>fileCheckpointingEnabled</code>（默认开）。</li>
+      <li><code>CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING</code> 关闭。</li>
+      <li>非交互 / SDK 默认关，需 <code>CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING</code> 开启。</li>
+    </ul>
+
+    <h2 id="s10">10. 关键文件与设计要点<a class="anchor" href="#s10">#</a></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>关注点</th><th>文件</th></tr></thead>
+      <tbody>
+        <tr><td>命令入口</td><td><code>commands/rewind/index.ts</code>、<code>commands/rewind/rewind.ts</code></td></tr>
+        <tr><td>选择器 UI + 恢复选项</td><td><code>components/MessageSelector.tsx</code></td></tr>
+        <tr><td>对话截断 + 重发</td><td><code>screens/REPL.tsx</code>（<code>rewindConversationTo</code> / <code>restoreMessageSync</code>）</td></tr>
+        <tr><td>文件快照 / 备份 / 回滚</td><td><code>utils/fileHistory.ts</code></td></tr>
+        <tr><td>resume 恢复</td><td><code>utils/sessionRestore.ts</code>、<code>hooks/useFileHistorySnapshotInit.ts</code></td></tr>
+        <tr><td>headless rewind</td><td><code>cli/print.ts</code></td></tr>
+      </tbody>
+    </table></div>
+    <p>设计要点：</p>
+    <ol>
+      <li><strong>对话与代码 rewind 解耦</strong>，可单独执行，用 messageId 锚定同一时间点。</li>
+      <li>文件快照<strong>按 message 存</strong>而非按时间，天然对齐"回到那条消息"。</li>
+      <li>备份用 <strong>copyFile + hash 命名 + 版本号 + per-session 目录</strong>，resume 用 hard link 迁移，省空间。</li>
+      <li>rewind 顺带把原 prompt 填回输入框，把"回退"变成"编辑重发"。</li>
+      <li>trackEdit/makeSnapshot 的<strong>三阶段 + re-check</strong> 防 speculative/并发 race 污染 v1。</li>
+      <li>截断对话时连带重置 microcompact / contextCollapse / conversationId / promptSuggestion，防 stale 引用。</li>
+      <li>回退前 <strong>dry-run diff 预览</strong> + <strong>无损快速路径</strong>，既安全又不啰嗦。</li>
+    </ol>
+
+    <nav class="page-nav">
+      <a class="prev" href="./agent-team.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">Agent Team 原理</span>
+      </a>
+      <a class="next" href="./auto-mode-deep-dive.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">Auto Mode</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

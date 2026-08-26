@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>启动与运行时 · Claude Code 源码笔记</title>
+<meta name="description" content="main.tsx 模式分流、init 安全初始化、setup 会话准备、context 上下文装配、query 模型主循环与 QueryEngine、API provider 分支。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>架构主线<span class="sep">/</span>启动与运行时</div>
+  <header class="page-head">
+    <span class="eyebrow">架构主线 · 01</span>
+    <h1>启动与运行时</h1>
+    <p class="lead">从真实启动入口到模型主循环：main.tsx 的总调度、init 的安全与遥测边界、setup 的会话准备、context 的上下文装配、query 的可恢复状态机。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>启动入口：main.tsx</a></li>
+        <li><a href="#s2"><span class="num">2</span>早期初始化：init.ts</a></li>
+        <li><a href="#s3"><span class="num">3</span>会话准备：setup.ts</a></li>
+        <li><a href="#s4"><span class="num">4</span>上下文装配：context.ts</a></li>
+        <li><a href="#s5"><span class="num">5</span>交互 UI 启动路径</a></li>
+        <li><a href="#s6"><span class="num">6</span>Headless / SDK 路径</a></li>
+        <li><a href="#s7"><span class="num">7</span>主查询循环：query.ts</a></li>
+        <li><a href="#s8"><span class="num">8</span>工具执行在 query 中的位置</a></li>
+        <li><a href="#s9"><span class="num">9</span>API 客户端</a></li>
+        <li><a href="#s10"><span class="num">10</span>阅读建议</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. 启动入口：<code>src/main.tsx</code><a class="anchor" href="#s1">#</a></h2>
+    <p><code>src/main.tsx</code> 是启动入口。文件开头特意安排了一组必须最先执行的 side effect：</p>
+    <ul>
+      <li><code>profileCheckpoint('main_tsx_entry')</code>：在重模块加载前记录启动 profiler 点。</li>
+      <li><code>startMdmRawRead()</code>：提前并行触发 MDM 配置读取。</li>
+      <li><code>startKeychainPrefetch()</code>：提前并行读取 macOS keychain 中的 OAuth 与 legacy API key。</li>
+    </ul>
+    <p>这些操作说明启动路径已经被认真优化：慢 I/O 被尽量提前、并行化，并从真正渲染路径里挪走。</p>
+    <p><code>main.tsx</code> 后面承担的是“总调度器”职责，而不是单纯渲染 UI。它要处理：</p>
+    <ul>
+      <li>Commander 参数定义与早期 argv 预处理；</li>
+      <li><code>-p/--print</code>、<code>--sdk-url</code>、interactive、assistant、bridge、remote、resume、teleport、worktree 等模式分流；</li>
+      <li>顶层 CLI 还有 <code>gateway</code>、<code>import</code>、<code>sandbox</code>、<code>project</code>、<code>prune</code>、<code>agents</code>，以及 bg-spare 后台进程；</li>
+      <li><code>init()</code>、<code>setup()</code>、插件/技能初始化、MCP 预取、commands/agents 加载；</li>
+      <li>trust/onboarding/OAuth/setup/resume 等启动弹窗；</li>
+      <li>REPL 挂载或 headless <code>QueryEngine</code> 路径；</li>
+      <li>remote control / CCR bridge 的初始化。</li>
+    </ul>
+    <p>argv 先分流再动态 import：daemon、bg-spare、bridge、Chrome/Computer Use MCP 这些路径不进默认图。</p>
+
+    <h2 id="s2">2. 早期初始化：<code>src/entrypoints/init.ts</code><a class="anchor" href="#s2">#</a></h2>
+    <p><code>init()</code> 是 memoized 的全局一次性初始化。它的核心顺序是：</p>
+    <ol>
+      <li><code>enableConfigs()</code>：启用配置系统。</li>
+      <li><code>applySafeConfigEnvironmentVariables()</code>：trust 之前只应用安全环境变量。</li>
+      <li><code>assertScrubSandboxAvailable()</code>。</li>
+      <li><code>applyExtraCACertsFromConfig()</code>：在首次 TLS 前注入额外 CA，因为 Bun/BoringSSL 会缓存证书状态。</li>
+      <li><code>setupGracefulShutdown()</code>：安装退出清理。</li>
+      <li>动态导入 1P event logging 和 GrowthBook，避免启动时同步吞下 OpenTelemetry 依赖。</li>
+      <li><code>populateOAuthAccountInfoIfNeeded()</code>、JetBrains detection、repository detection。</li>
+      <li>初始化 remote managed settings / policy limits 的加载 promise，避免后续系统等待时死锁。</li>
+      <li><code>configureGlobalMTLS()</code> 与 <code>configureGlobalAgents()</code>：mTLS 与 proxy 全局配置。</li>
+      <li><code>preconnectAnthropicApi()</code>：在合适条件下预连 Anthropic API。</li>
+      <li>remote 环境下可初始化 agent proxy。</li>
+      <li>Windows：既没 Git Bash、PowerShell 工具又关着，直接退出；需要 Git for Windows 或 PowerShell 7（或设 <code>CLAUDE_CODE_GIT_BASH_PATH</code>）。</li>
+      <li>LSP cleanup、team cleanup、scratchpad 目录。</li>
+    </ol>
+    <p>这个文件有一个很清楚的安全边界：trust 之前只做“安全配置”，trust 之后再调用 <code>initializeTelemetryAfterTrust()</code>。对 remote-settings-eligible 用户，它会等待远程设置加载并重新应用环境变量，再初始化遥测。也就是说，trust dialog 在这里是真正的运行时门槛，不只是 UI 提示。</p>
+
+    <h2 id="s3">3. 会话准备：<code>src/setup.ts</code><a class="anchor" href="#s3">#</a></h2>
+    <p><code>setup()</code> 把“进程已经启动”变成“当前会话可运行”。它做的事比名字重很多：</p>
+    <ul>
+      <li>检查 <strong>Node.js 22+</strong>（不是 18）。低于 22 直接退出。</li>
+      <li>如传入 <code>customSessionId</code>，切换 session。</li>
+      <li>先清掉 <code>$CLAUDE_CODE_MESSAGING_SOCKET</code> / <code>TOKEN</code>。UDS inbox 要过跨会话 messaging 门：gate 关、remote thin client、bare 会跳过；<code>CLAUDE_BG_BACKEND=daemon</code> 时另起 rendezvous。</li>
+      <li>装 observer spawner。</li>
+      <li>交互模式下恢复中断过的 iTerm2 / Terminal.app 设置备份。</li>
+      <li><code>setCwd(cwd)</code>，然后捕获 hooks 配置快照。</li>
+      <li>非 remote 时初始化 FileChanged hook watcher。</li>
+      <li>处理 <code>--worktree</code>：git worktree，或 <code>WorktreeCreate</code> hook 让非 git VCS 接入；可选创建 tmux session。</li>
+      <li>worktree 创建后切 cwd、清缓存、重读 hooks/settings。</li>
+      <li>非 bare 时拉后台任务、plugin hooks、session file access、ultrareview post-commit hook；trust 且非 remote 时 <code>startMemoryWatcher</code>。</li>
+      <li>可预热 auto-memory / org-memory 的 recall 索引。</li>
+      <li>打 <code>tengu_started</code>。</li>
+      <li><code>bypassPermissions</code> / <code>--dangerously-skip-permissions</code>：root/sudo 且不在 <code>IS_SANDBOX</code> / <code>CLAUDE_CODE_BUBBLEWRAP</code> 里会拒绝。</li>
+    </ul>
+    <p>这里有两个细节很有代表性：</p>
+    <ol>
+      <li>hook snapshot 必须在 <code>setCwd()</code> 之后，因为 hooks 来自当前项目目录；worktree 切换后还要重新 snapshot。</li>
+      <li><code>--bare</code> 跳过 UDS、部分后台任务和 prefetch，但危险权限校验和 <code>tengu_started</code> 仍会执行。</li>
+    </ol>
+
+    <h2 id="s4">4. 上下文装配：<code>src/context.ts</code><a class="anchor" href="#s4">#</a></h2>
+    <p><code>context.ts</code> 负责把会话环境变成模型可消费的上下文，主要有两块。</p>
+    <h3>system context</h3>
+    <p><code>getSystemContext()</code> 会按需加入 git 快照：当前分支、main/default、<code>git status --short</code>（最多 2000 字符）、<code>git log --oneline -n 5</code>、<code>git config user.name</code>。remote 或关掉 git instructions 时跳过。<code>CLAUDE_CODE_PERFORCE_MODE</code> 会改成 Perforce 工作区说明。</p>
+    <h3>user context</h3>
+    <p><code>getUserContext()</code> 主要负责 <code>CLAUDE.md</code>：</p>
+    <ul>
+      <li><code>CLAUDE_CODE_DISABLE_CLAUDE_MDS</code> 会硬关闭；</li>
+      <li><code>--bare</code> 会跳过自动发现，但仍尊重显式 <code>--add-dir</code>；</li>
+      <li>读取 memory files 后拼成 <code>claudeMd</code>，并缓存给 auto-mode classifier；</li>
+      <li>注入当前日期；</li>
+      <li>有登录邮箱时注入 <code>The user's email address is …</code>；</li>
+      <li>可附带 attached project 块。</li>
+    </ul>
+
+    <h2 id="s5">5. 交互 UI 启动路径<a class="anchor" href="#s5">#</a></h2>
+    <p>交互模式大致是：</p>
+    <pre><code>main.tsx
+  → interactiveHelpers.tsx
+  → replLauncher.tsx
+  → components/App.tsx
+  → REPL</code></pre>
+    <p><code>interactiveHelpers.tsx</code> 维护进入 UI 前的“仪式”：trust dialog、setup screens、MCP approval、外部 <code>CLAUDE.md</code> include 审批、环境变量应用、telemetry-after-trust、GrowthBook 重置等。</p>
+    <p><code>replLauncher.tsx</code> 职责更纯：动态导入 <code>&lt;App&gt;</code> 和 <code>&lt;REPL&gt;</code>，再用 <code>renderAndRun()</code> 挂载。动态导入可以避免 <code>main.tsx</code> 过早拉入 React/Ink 组件树。</p>
+    <p><code>dialogLaunchers.tsx</code> 则把 resume chooser、snapshot update、teleport mismatch、invalid settings 等一次性 UI 从主入口拆出去，让 <code>main.tsx</code> 不至于更膨胀。</p>
+
+    <h2 id="s6">6. Headless / SDK 路径：<code>src/QueryEngine.ts</code><a class="anchor" href="#s6">#</a></h2>
+    <p>交互 REPL 会走 React 组件和 hooks；<code>--print</code>、SDK、remote session 子进程等非交互场景则主要依赖 <code>QueryEngine</code>。</p>
+    <p><code>QueryEngine</code> 是对 <code>query()</code> 的会话化包装：</p>
+    <ul>
+      <li>一个 <code>QueryEngine</code> 对应一个 conversation；</li>
+      <li><code>submitMessage()</code> 处理用户输入、slash command、attachments、系统 prompt、工具上下文；</li>
+      <li>维护 <code>mutableMessages</code>、read file cache、permission denials、usage、loaded nested memory、discovered skills；</li>
+      <li>写 transcript，使 kill-mid-request 后仍可 resume；</li>
+      <li>将内部 <code>Message</code> 转成 SDK 事件，如 <code>assistant</code>、<code>user replay</code>、<code>system init</code>、<code>api_retry</code>、<code>compact_boundary</code>、<code>tool_use_summary</code>、<code>result</code>；</li>
+      <li>支持 <code>maxTurns</code>、<code>maxBudgetUsd</code>、structured output retry limit、partial stream events、MCP URL elicitation；</li>
+      <li>compact boundary 后主动裁剪 pre-boundary messages，降低长 headless 会话内存。</li>
+    </ul>
+    <p>可以把 <code>QueryEngine</code> 理解为“非交互模式的 REPL store + query loop adapter”。</p>
+
+    <h2 id="s7">7. 主查询循环：<code>src/query.ts</code><a class="anchor" href="#s7">#</a></h2>
+    <p><code>query.ts</code> 是整个系统的运行时核心。它不是“发一次请求”，而是一个可恢复、可压缩、可执行工具、可继续多轮的状态机。</p>
+    <p>每次循环大致做这些事：</p>
+    <ol>
+      <li>建立 query chain tracking，用于嵌套查询/子代理的 analytics。</li>
+      <li>截取 compact boundary 之后的消息。</li>
+      <li>对 tool results 应用总预算，必要时把大结果替换为持久化文件引用。</li>
+      <li>可选 microcompact；中间轮可 fold 排队命令。history snip / context collapse drain 在 2.1.233 字面量里看不到，不当默认步骤。</li>
+      <li>自动 compact：可先吃预计算的 compact（<code>tengu_sepia_moth</code> + <code>precomputeCompactionEnabled</code>），再跑阈值 compact。窗口解析见 <a href="./context-compact-checkpoint.html">压缩专题</a>。</li>
+      <li>拼接完整 system prompt 与 user context。</li>
+      <li>计算当前模型；plan 模式下可根据 200k token 情况切模型。</li>
+      <li>调用 <code>deps.callModel()</code> 流式请求模型。</li>
+      <li>流式过程中发现 tool_use 时，可用 <code>StreamingToolExecutor</code> 提前开始执行工具。</li>
+      <li>对可恢复错误做 withheld：prompt-too-long、media-size、max-output-tokens 等先不立刻暴露给 SDK/UI。</li>
+      <li>流结束后处理 fallback、reactive compact、max output tokens recovery。</li>
+      <li>若没有 tool_use，执行 stop hooks、token budget continuation、返回完成。</li>
+      <li>若有 tool_use，执行剩余工具，收集 tool results、attachments、memory prefetch、skill discovery、queued commands。</li>
+      <li>刷新工具集合，使新连接的 MCP server 可在下一轮暴露给模型。</li>
+      <li>检查 <code>maxTurns</code>，否则组装下一轮 messages 继续循环。</li>
+    </ol>
+    <p><code>query.ts</code> 里几个重要恢复策略：</p>
+    <ul>
+      <li><strong>streaming fallback tombstone</strong>：如果流式过程中触发模型 fallback，会 tombstone 已 yield 的孤儿 assistant messages，避免 thinking signature 或 tool_use 残块污染 transcript。</li>
+      <li><strong>prompt-too-long recovery</strong>：先 withhold 413，再 <code>tryReactiveCompact</code>（remote 还要过 <code>tengu_reactive_compact_remote</code>）。</li>
+      <li><strong>max_output_tokens recovery</strong>：meta user message 让模型从中断点继续。2.1.88 那条 8k→64k 升级门不在 2.1.233 制品里。</li>
+      <li><strong>thinking-only retry</strong>、Stop hook 阻断上限（默认 8）、rapid-refill breaker（compact 后 3 轮内把窗口填满，连续 3 次就停）。</li>
+      <li><strong>tool result budget</strong>：大 tool result 可被替换/落盘，避免上下文被工具输出撑爆。</li>
+      <li><strong>pending tool use summary</strong>：上一轮工具摘要用小模型异步生成，在下一轮流式期间等待，减少主路径阻塞。</li>
+    </ul>
+
+    <h2 id="s8">8. 工具执行在 query 中的位置<a class="anchor" href="#s8">#</a></h2>
+    <p><code>query.ts</code> 自身不直接执行工具细节，而是委托：</p>
+    <ul>
+      <li><code>services/tools/toolOrchestration.ts</code>：按并发安全性分批，read-only/concurrency-safe 批并行，写操作串行。</li>
+      <li><code>services/tools/toolExecution.ts</code>：单个 tool use 的 schema、权限、hook、progress、结果映射、错误处理。</li>
+      <li><code>StreamingToolExecutor</code>：模型还在流式输出时就启动已完整到达的 tool use。2.1.233 不再走 <code>tengu_streaming_tool_execution2</code> 门，当作默认开。</li>
+    </ul>
+    <p>这层拆分使主循环可以专注“轮次状态机”，而工具层专注“执行一个 tool use 是否安全、如何展示、如何转换结果”。</p>
+
+    <h2 id="s9">9. API 客户端：<code>src/services/api/client.ts</code><a class="anchor" href="#s9">#</a></h2>
+    <p>API client 把不同模型提供方统一到 Anthropic SDK 风格接口下。可以直接看到几条分支：</p>
+    <ul>
+      <li>直连 Anthropic：API key 或 Claude.ai OAuth token。</li>
+      <li>Bedrock：AWS region、small fast model region override、AWS bearer token、AWS credential refresh。</li>
+      <li>Foundry：Azure Foundry API key 或 Azure AD token provider。</li>
+      <li>Vertex：GCP credential refresh、GoogleAuth、按模型选择 region。</li>
+    </ul>
+    <p>它还统一加默认 headers：<code>x-app</code>、User-Agent、session id、container/session metadata、SDK client app 等。对 first-party API，会通过 fetch wrapper 注入 <code>x-client-request-id</code>，方便 timeout 这类无 server request id 的问题排查。</p>
+
+    <h2 id="s10">10. 这一层的阅读建议<a class="anchor" href="#s10">#</a></h2>
+    <p>如果目标是理解“一次输入后发生什么”，推荐顺序：</p>
+    <ol>
+      <li><code>main.tsx</code>：看模式分流和启动顺序。</li>
+      <li><code>entrypoints/init.ts</code>：看全局安全与遥测边界。</li>
+      <li><code>setup.ts</code>：看会话准备、hooks、worktree、permission 安全校验。</li>
+      <li><code>context.ts</code>：看系统上下文和用户上下文来源。</li>
+      <li><code>QueryEngine.ts</code>：看 headless/SDK 怎么包 <code>query()</code>。</li>
+      <li><code>query.ts</code>：看模型循环、compact、工具执行和恢复策略。</li>
+      <li><code>services/api/client.ts</code>：看 provider 和认证分支。</li>
+    </ol>
+
+    <nav class="page-nav">
+      <a class="prev" href="./index.html">
+        <span class="dir">← 返回</span>
+        <span class="ttl">首页 · 总览</span>
+      </a>
+      <a class="next" href="./commands-tools-tasks.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">命令、工具与任务</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

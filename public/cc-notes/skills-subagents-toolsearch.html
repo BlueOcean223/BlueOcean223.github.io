@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skill、Subagent、ToolSearch · Claude Code 源码笔记</title>
+<meta name="description" content="skill 多来源发现与三类触发、Agent/subagent/fork/worktree/remote 隔离、ToolSearch 延迟工具加载、Claude Code 初始工具集合。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>机制专题<span class="sep">/</span>Skill、Subagent、ToolSearch</div>
+  <header class="page-head">
+    <span class="eyebrow">机制专题 · 10</span>
+    <h1>Skill、Subagent、ToolSearch 与初始工具</h1>
+    <p class="lead">skill 的发现与触发、subagent 的启动与隔离、ToolSearch 的延迟工具加载。初始工具集合以 2.1.233 制品为准。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>Skill 的发现与触发</a></li>
+        <li><a href="#s2"><span class="num">2</span>Subagent 的触发与逻辑</a></li>
+        <li><a href="#s3"><span class="num">3</span>Tool Search 机制</a></li>
+        <li><a href="#s4"><span class="num">4</span>Claude Code 初始工具有哪些</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. Skill 的发现与触发<a class="anchor" href="#s1">#</a></h2>
+    <h3>skill 如何被发现</h3>
+    <p><code>skills/loadSkillsDir.ts</code> 支持多来源:</p>
+    <ol>
+      <li>managed skills:<code>&lt;managed&gt;/.claude/skills</code></li>
+      <li>user skills:<code>~/.claude/skills</code></li>
+      <li>project skills:从当前目录向上查 <code>.claude/skills</code></li>
+      <li><code>--add-dir</code> 额外目录中的 <code>.claude/skills</code></li>
+      <li>legacy <code>/commands</code> 目录中的 markdown/<code>SKILL.md</code></li>
+      <li>plugin skills</li>
+      <li>bundled skills</li>
+      <li>MCP skills:MCP <code>skill://</code> resource 或 prompt 转换而来</li>
+    </ol>
+    <p>新格式只支持:</p>
+    <pre><code>.claude/skills/&lt;skill-name&gt;/SKILL.md</code></pre>
+    <p>frontmatter 解析字段包括:<code>description</code>、<code>when_to_use</code>、<code>allowed-tools</code>、<code>argument-hint</code> / <code>arguments</code>、<code>model</code>、<code>disable-model-invocation</code>、<code>user-invocable</code>、<code>hooks</code>、<code>context: fork</code>、<code>agent</code>、<code>effort</code>、<code>paths</code>、<code>shell</code>。</p>
+    <h3>条件 skill 与动态发现</h3>
+    <p>skill 不是只在启动时加载:</p>
+    <ul>
+      <li>带 <code>paths</code> frontmatter 的 conditional skills 会先存入 <code>conditionalSkills</code>,不立即暴露。</li>
+      <li><code>activateConditionalSkillsForPaths(filePaths, cwd)</code> 用 gitignore 风格匹配路径,命中后加入 dynamic skills。</li>
+      <li><code>discoverSkillDirsForPaths()</code> 会在文件操作路径向上查嵌套 <code>.claude/skills</code>,跳过 gitignored 目录。</li>
+      <li><code>addSkillDirectories()</code> 动态加载后触发 <code>skillsLoaded.emit()</code>,其他缓存可清理。</li>
+    </ul>
+    <p>这解释了为什么 Claude Code 会在读/写某些目录后突然知道新的项目局部 skill。</p>
+    <h3>skill 什么时候触发</h3>
+    <p>有三类触发:</p>
+    <ol>
+      <li><strong>用户显式 slash command</strong>:<code>/skill-name args</code> 经 <code>processSlashCommand.tsx</code> 展开。若 skill frontmatter <code>context: fork</code>,会作为 forked slash command 在 subagent 中跑。</li>
+      <li><strong>模型主动调用 <code>Skill</code> tool</strong>:<code>tools/SkillTool/SkillTool.ts</code> 暴露 <code>Skill({ skill, args })</code>,模型根据 tool prompt 中的 skill 名称/描述/when_to_use 判断是否调用。</li>
+      <li><strong>agent frontmatter 预加载</strong>:agent definition 可写 <code>skills: [...]</code>,<code>runAgent.ts</code> 启动 subagent 时会把这些 skill 内容作为初始 meta message 注入。</li>
+    </ol>
+    <h3>SkillTool 的执行形态</h3>
+    <p><code>SkillTool</code> 有两种执行:</p>
+    <ul>
+      <li>inline:把 skill markdown 展开成新的 user/meta messages,返回 <code>Launching skill</code>,后续主 query loop 继续处理。</li>
+      <li>fork:如果 command <code>context === 'fork'</code>,通过 <code>executeForkedSkill()</code> 启动 subagent,执行完返回 result 文本。</li>
+    </ul>
+    <p>权限上:<code>SkillTool.checkPermissions()</code> 先检查 <code>Skill(name)</code> deny/allow 规则;远程 canonical skill 可自动 allow,但 deny 仍优先;如果 skill 只有安全字段,自动 allow,否则默认 ask,并给出 exact/prefix allow suggestion;skill 的 <code>allowed-tools</code> 会在展开后作为 command/session allow rules 加到权限上下文中。</p>
+
+    <h2 id="s2">2. Subagent 的触发与逻辑<a class="anchor" href="#s2">#</a></h2>
+    <h3>触发入口</h3>
+    <p>主要入口是 <code>Agent</code> tool:<code>tools/AgentTool/AgentTool.tsx</code>。输入字段包括:<code>description</code>、<code>prompt</code>、<code>subagent_type</code>、<code>model</code>、<code>run_in_background</code>、team/swarm 字段(<code>name</code>、<code>team_name</code>、<code>mode</code>)、isolation(<code>worktree</code> / ant-only <code>remote</code>)、assistant mode 下的 <code>cwd</code>。如果开启 <code>FORK_SUBAGENT</code>,省略 <code>subagent_type</code> 会走 fork path;否则默认 <code>general-purpose</code>。</p>
+    <h3>agent 如何被发现</h3>
+    <p><code>tools/AgentTool/loadAgentsDir.ts</code>:</p>
+    <ul>
+      <li>built-in agents</li>
+      <li>plugin agents</li>
+      <li>user/project/policy/flag agents,来自 <code>.claude/agents</code> markdown</li>
+      <li>active agent 采用覆盖顺序:built-in &lt; plugin &lt; user &lt; project &lt; flag &lt; managed(后写覆盖同名)</li>
+      <li>支持 frontmatter:tools/disallowedTools、model、permissionMode、mcpServers、hooks、maxTurns、skills、memory、background、isolation 等。</li>
+    </ul>
+    <p><code>Agent</code> tool prompt 会把可用 agent 列给模型;启用 <code>shouldInjectAgentListInMessages()</code> 时列表改由 <code>agent_listing_delta</code> attachment 注入,以减少工具 schema cache bust。</p>
+    <h3>正常 subagent 与 fork subagent</h3>
+    <p>正常 subagent:使用选中 agent 自己的 system prompt;默认新上下文,只收到 parent 写进 prompt 的信息;tool pool 由 <code>assembleToolPool()</code> 按 agent permission mode 和 tools/disallowedTools 重新计算;thinking 通常关闭以控成本。</p>
+    <p>fork subagent:省略 <code>subagent_type</code> 触发;继承父会话完整消息前缀和父 system prompt,目标是 prompt cache 命中;<code>buildForkedMessages()</code> 会复制父 assistant 的所有 tool_use,再补统一 placeholder tool_result,最后追加本 fork directive;所有 fork 强制 async,避免主线程等待;fork child 禁止递归 fork(通过 querySource 和 fork boilerplate message 检测)。</p>
+    <h3>sync、async、background、worktree、remote</h3>
+    <p><code>AgentTool</code> 会决定 <code>shouldRunAsync</code>:用户 <code>run_in_background</code>、agent definition <code>background: true</code>、coordinator mode、fork subagent gate、assistant/KAIROS/proactive 模式;<code>CLAUDE_CODE_DISABLE_BACKGROUND_TASKS</code> 关闭后台任务。</p>
+    <ul>
+      <li>sync agent:主线程等待,但注册 foreground task,可被 background。</li>
+      <li>async agent:注册 <code>LocalAgentTask</code>,独立 abort controller,完成后 enqueue task notification,父 agent 在后续 turn 接收结果。</li>
+      <li>worktree isolation:创建临时 git worktree;完成后若无改动自动删除,有改动保留并通知。</li>
+      <li>remote isolation:ant-only,走 CCR/teleport,注册 <code>RemoteAgentTask</code>。</li>
+    </ul>
+    <h3>subagent 的权限与状态隔离</h3>
+    <p><code>utils/forkedAgent.ts</code> 的 <code>createSubagentContext()</code> 是关键:</p>
+    <ul>
+      <li>默认 clone <code>readFileState</code>,新建 <code>nestedMemoryAttachmentTriggers</code>、<code>dynamicSkillDirTriggers</code>、<code>discoveredSkillNames</code>。</li>
+      <li>默认子 abort controller 绑定父 abort;async agent 可传独立 controller。</li>
+      <li>默认 <code>setAppState</code> no-op,避免后台 agent 改主 UI;但 task 相关通过 <code>setAppStateForTasks</code> 回到 root store。</li>
+      <li>默认设置 <code>shouldAvoidPermissionPrompts</code>,后台不可交互时 ask 会转 deny;bubble/可交互 agent 例外。</li>
+      <li>local denial tracking 给 async subagent 单独计数。</li>
+    </ul>
+
+    <h2 id="s3">3. Tool Search 机制<a class="anchor" href="#s3">#</a></h2>
+    <h3>为什么需要 ToolSearch</h3>
+    <p>MCP 工具和大型工具 schema 可能非常多、非常长。<code>utils/toolSearch.ts</code> 让工具"先只暴露名字,按需加载完整 schema"。这样减少:初始工具定义 tokens、MCP 连接变化导致的 prompt cache bust、大量 MCP tools 超过 API 工具数量/上下文限制的风险。</p>
+    <h3>哪些工具会 defer</h3>
+    <p><code>tools/ToolSearchTool/prompt.ts</code>:</p>
+    <ul>
+      <li><code>alwaysLoad === true</code> 永不 defer。MCP 可通过 <code>_meta['anthropic/alwaysLoad']</code> 设置。</li>
+      <li>MCP tools 默认 defer。</li>
+      <li><code>tool.shouldDefer === true</code> 的普通工具 defer。</li>
+      <li><code>ToolSearch</code> 自己永不 defer。</li>
+      <li>fork subagent 开启时 <code>Agent</code> 不 defer,因为第一轮必须可用。</li>
+      <li>Brief、SendUserFile 等核心通信工具也避免 defer。</li>
+    </ul>
+    <h3>开关与兼容</h3>
+    <p><code>ENABLE_TOOL_SEARCH</code> 解析:unset 默认 <code>tst</code>(启用);<code>true</code> 启用;<code>false</code> 关闭;<code>auto</code> / <code>auto:N</code> 达到 deferred tool token 阈值才启用(<code>auto:0</code> 永远启用,<code>auto:100</code> 关闭)。还会检查:模型是否支持 <code>tool_reference</code>(默认 haiku 不支持)、<code>CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS</code> 强制关闭、非 first-party proxy 且用户未显式启用时保守关闭、<code>ToolSearchTool</code> 本身被 disallowed 也关闭。</p>
+    <h3>搜索与加载流程</h3>
+    <ol>
+      <li><code>getDeferredToolsDelta()</code> 扫描历史 attachment,计算新增/移除 deferred tool 名称,以 <code>deferred_tools_delta</code> attachment 告诉模型。</li>
+      <li>模型调用 <code>ToolSearch({ query })</code>。</li>
+      <li>query 支持:<code>select:Read,Edit,Grep</code> 精确选择;普通关键词搜索;<code>+slack send</code> 表示 slack 必须匹配,其它词排序。</li>
+      <li>搜索会匹配工具名、MCP server/action 名、tool prompt/description、<code>searchHint</code>。</li>
+      <li>返回结果不是普通文本,而是 <code>tool_reference</code> blocks;API 会把这些 reference 展开成完整工具 schema。</li>
+      <li><code>extractDiscoveredToolNames()</code> 从历史 tool_reference 和 compact boundary metadata 中恢复已发现工具集合,compact 后不丢。</li>
+    </ol>
+
+    <h2 id="s4">4. Claude Code 初始工具有哪些<a class="anchor" href="#s4">#</a></h2>
+    <p><code>getAllBaseTools()</code> 是全集。下表是 2.1.233 外部常见会看见的核心工具（还要过 <code>isEnabled</code> / 权限 / 模型门控）:</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>工具</th><th>作用</th><th>备注</th></tr></thead>
+      <tbody>
+        <tr><td><code>Agent</code></td><td>启动 subagent / fork / background agent</td><td>legacy alias <code>Task</code></td></tr>
+        <tr><td><code>TaskOutput</code></td><td>读取后台 task 输出</td><td>用于 async agent/shell 等</td></tr>
+        <tr><td><code>Bash</code></td><td>shell 命令</td><td>权限与 sandbox 最复杂</td></tr>
+        <tr><td><code>Glob</code></td><td>文件 glob 搜索</td><td>如果构建内置 bfs/ugrep,可能不出现</td></tr>
+        <tr><td><code>Grep</code></td><td>内容搜索</td><td>同上</td></tr>
+        <tr><td><code>ExitPlanMode</code></td><td>退出 plan mode</td><td>V2 tool</td></tr>
+        <tr><td><code>Read</code></td><td>读文件/图片/PDF</td><td>文件内容进入上下文</td></tr>
+        <tr><td><code>Edit</code></td><td>精确编辑文件</td><td>旧模型必须先 Read；2.1.208 起新模型可跳过</td></tr>
+        <tr><td><code>Write</code></td><td>创建/覆盖文件</td><td>2.1.228 起新模型对齐 Edit；旧模型既有文件仍须先 Read</td></tr>
+        <tr><td><code>NotebookEdit</code></td><td>编辑 notebook</td><td>notebook 专用</td></tr>
+        <tr><td><code>WebFetch</code></td><td>抓取 URL</td><td>domain 权限</td></tr>
+        <tr><td><code>TodoWrite</code></td><td>写任务清单</td><td>v1；默认关，<code>ENABLE_TASKS=0</code> 回退。见 <a href="./todo-tools-gating.html">Todo 门控</a></td></tr>
+        <tr><td><code>WebSearch</code></td><td>Web 搜索</td><td>provider/gate 影响</td></tr>
+        <tr><td><code>TaskStop</code></td><td>停止任务</td><td>后台任务控制</td></tr>
+        <tr><td><code>AskUserQuestion</code></td><td>向用户提问/结构化问题</td><td>bypass 下仍要人；auto 默认交给分类器</td></tr>
+        <tr><td><code>Skill</code></td><td>模型调用 skill</td><td>skill 发现后由模型触发</td></tr>
+        <tr><td><code>EnterPlanMode</code></td><td>进入 plan mode</td><td>权限模式相关</td></tr>
+        <tr><td><code>SendMessage</code></td><td>给 agent/team 发送消息</td><td>通过 lazy require 加入</td></tr>
+        <tr><td><code>Brief</code></td><td>assistant/KAIROS 通信简报工具</td><td>是否启用看 feature</td></tr>
+        <tr><td><code>ListMcpResources</code></td><td>列 MCP resources</td><td>基础 MCP resource 工具</td></tr>
+        <tr><td><code>ReadMcpResource</code></td><td>读 MCP resource</td><td>基础 MCP resource 工具</td></tr>
+        <tr><td><code>ToolSearch</code></td><td>按需加载 deferred tools</td><td>默认可能启用,受模型/provider/env 影响</td></tr>
+        <tr><td><code>memory_list</code> / <code>read</code> / <code>write</code></td><td>项目记忆存取</td><td>连上的 project memory store，不是 auto-memory 那条 Write 路径</td></tr>
+        <tr><td><code>Workflow</code></td><td>工作流</td><td>2.1.233 工具表</td></tr>
+        <tr><td><code>Monitor</code></td><td>监视</td><td>2.1.233 工具表</td></tr>
+        <tr><td><code>PowerShell</code></td><td>Windows shell</td><td>没 Git Bash 默认开</td></tr>
+      </tbody>
+    </table></div>
+    <p>条件/内部/实验工具还包括：<code>REPL</code>、<code>LSP</code>、worktree 的 <code>EnterWorktree/ExitWorktree</code>、<code>Workflow</code>、Cron 三件套、<code>Monitor</code>、<code>PushNotification</code> 等。<code>Tungsten</code> / <code>WebBrowser</code> 不在 2.1.233 工具表。<code>PowerShell</code>：Windows 没 Git Bash 默认开，有则看 <code>tengu_cobalt_ridge</code>。Todo v2 四件套默认给未门控模型；2.1.233 起 Opus 4.8 / Sonnet 5 等需 <code>CLAUDE_CODE_ENABLE_TODO_TOOLS=1</code>。<code>TeamCreate</code>/<code>TeamDelete</code> 已在 2.1.178 移除。<code>Config</code> 不在 2.1.233 工具表里。</p>
+    <p>注意:真正发给模型的工具列表还会被 <code>isEnabled()</code>、permission blanket deny、allowed/disallowed tools、agent 工具限制、ToolSearch defer、MCP 连接状态共同过滤。因此 <code>getAllBaseTools()</code> 是全集,单次请求里的工具子集会更小。</p>
+
+    <nav class="page-nav">
+      <a class="prev" href="./runtime-stability.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">长运行兜底与稳定性</span>
+      </a>
+      <a class="next" href="./agent-team.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">Agent Team 原理</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>命令、工具与任务 · Claude Code 源码笔记</title>
+<meta name="description" content="Command / Tool / Task 三层边界、Tool 协议、工具编排与流式执行、权限决策链路、BashTool、AgentTool 与多代理、Task 系统。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>架构主线<span class="sep">/</span>命令、工具与任务</div>
+  <header class="page-head">
+    <span class="eyebrow">架构主线 · 02</span>
+    <h1>命令、工具与任务</h1>
+    <p class="lead">slash 表、工具表以 2.1.233 制品为准。能力分三层：slash 是用户控制面，Tool 是模型行动面，Task 是长生命周期执行容器。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>三层边界：Command、Tool、Task</a></li>
+        <li><a href="#s2"><span class="num">2</span>命令系统：commands.ts</a></li>
+        <li><a href="#s2b"><span class="num">2.1</span>2.1.233 的 slash 表</a></li>
+        <li><a href="#s3"><span class="num">3</span>Tool 协议：Tool.ts</a></li>
+        <li><a href="#s4"><span class="num">4</span>工具注册表：tools.ts</a></li>
+        <li><a href="#s5"><span class="num">5</span>工具执行编排</a></li>
+        <li><a href="#s6"><span class="num">6</span>权限决策链路</a></li>
+        <li><a href="#s7"><span class="num">7</span>BashTool 为什么很重</a></li>
+        <li><a href="#s8"><span class="num">8</span>AgentTool 与多代理</a></li>
+        <li><a href="#s9"><span class="num">9</span>任务系统</a></li>
+        <li><a href="#s10"><span class="num">10</span>阅读建议</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. 三层边界：Command、Tool、Task<a class="anchor" href="#s1">#</a></h2>
+    <p>能做事的能力分三层：</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>层级</th><th>面向谁</th><th>典型入口</th><th>适合承载</th></tr></thead>
+      <tbody>
+        <tr><td>Command</td><td>用户显式输入</td><td><code>/mcp</code>、<code>/config</code>、<code>/compact</code></td><td>配置、查看、管理、导出、模式切换、prompt 展开</td></tr>
+        <tr><td>Tool</td><td>模型调用</td><td><code>Read</code>、<code>Bash</code>、<code>Edit</code>、<code>Agent</code>、<code>mcp__...</code></td><td>文件、Shell、Web、MCP、Agent、Plan、Task 等模型能力</td></tr>
+        <tr><td>Task</td><td>运行时生命周期</td><td>LocalShellTask、LocalAgentTask</td><td>长任务、后台任务、远程 agent、输出落盘、kill/foreground</td></tr>
+      </tbody>
+    </table></div>
+    <p>这三层边界很清楚：slash 命令是用户控制面，Tool 是模型行动面，Task 是长生命周期执行容器。</p>
+
+    <h2 id="s2">2. 命令系统：<code>src/commands.ts</code><a class="anchor" href="#s2">#</a></h2>
+    <p><code>src/commands.ts</code> 是 slash 命令总注册表。它不是静态数组，而是多来源汇聚：</p>
+    <pre><code>bundled skills
+  + builtin plugin skills
+  + skill dir commands
+  + workflow commands
+  + plugin commands
+  + plugin skills
+  + built-in commands
+  + dynamic skills</code></pre>
+    <p>核心函数与机制：</p>
+    <ul>
+      <li><code>COMMANDS()</code>：memoized 的内建命令列表，避免模块初始化时读 config。</li>
+      <li><code>getSkills(cwd)</code>：并行加载 skill dir commands 与 plugin skills，并合并 bundled/builtin plugin skills。</li>
+      <li><code>loadAllCommands(cwd)</code>：并行加载 skills、plugin commands、workflow commands。</li>
+      <li><code>getCommands(cwd)</code>：每次都会重新跑 availability 与 <code>isEnabled()</code>，因此 <code>/login</code> 这类 auth 变化能即时影响命令可见性。</li>
+      <li><code>clearCommandsCache()</code>：清理 command、plugin、skill 多层缓存。</li>
+      <li><code>getSkillToolCommands()</code>：筛出可被 <code>SkillTool</code> 暴露给模型的 prompt 型命令。</li>
+      <li><code>getMcpSkillCommands()</code>：从 <code>AppState.mcp.commands</code> 中筛出 MCP 提供的 skills。</li>
+    </ul>
+    <p>命令还带有明确的安全/场景过滤：</p>
+    <ul>
+      <li><code>REMOTE_SAFE_COMMANDS</code>：<code>--remote</code> viewer 中允许的本地 TUI 命令，例如 <code>/session</code>、<code>/exit</code>、<code>/theme</code>。</li>
+      <li><code>BRIDGE_SAFE_COMMANDS</code>：从 Remote Control bridge 收到时允许执行的 local 命令，例如 <code>/compact</code>、<code>/clear</code>。<code>local-jsx</code> 默认禁止。</li>
+      <li><code>meetsAvailabilityRequirement()</code>：按 <code>claude-ai</code>、<code>console</code> 等 provider/auth 条件过滤。</li>
+    </ul>
+    <p>很多命令通过 <code>feature('...')</code> 或 <code>USER_TYPE</code> 条件引入，例如 assistant、bridge、voice、workflows、ultraplan、buddy、peers、fork、subscribe-pr。同一套源码服务多种发行/实验形态。</p>
+
+    <h2 id="s2b">2.1 2.1.233 的 slash 表<a class="anchor" href="#s2b">#</a></h2>
+    <p>制品 <code>slash-commands.txt</code> 从 bundle 扫出 112 个 <code>/name</code>。菜单里不是每一条都开着：不少带 <code>isEnabled</code> / feature / workspace 门。</p>
+    <p>相对 2.1.88，独立 slash 已经不在表里的包括：</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>旧名</th><th>2.1.233 怎么走</th></tr></thead>
+      <tbody>
+        <tr><td><code>/loop</code></td><td>表里是 <code>/loops</code>。这条 local-jsx 注册目前 <code>isEnabled</code> 恒 false；循环调度走 <code>CronCreate</code> / <code>CronList</code> / <code>CronDelete</code> 和 <code>.claude/scheduled_tasks.json</code></td></tr>
+        <tr><td><code>/cost</code>、<code>/stats</code></td><td><code>/usage</code></td></tr>
+        <tr><td><code>/vim</code></td><td><code>/config</code> → Editor mode。Vim 输入子系统还在</td></tr>
+        <tr><td><code>/output-style</code></td><td><code>/config</code>。样式在会话开始固定</td></tr>
+        <tr><td><code>/schedule</code></td><td>没有独立 slash；调度看 Cron 三件套</td></tr>
+        <tr><td><code>/files</code>、<code>/debug</code></td><td>已从 slash 表拿掉</td></tr>
+        <tr><td><code>/commit</code>、<code>/commit-push-pr</code></td><td>不在 slash 表；skill 名里还留着</td></tr>
+      </tbody>
+    </table></div>
+    <p>扫表扫不到、bundle 里仍注册的：<code>/code-review</code>（alias <code>review</code>，<code>ultra</code> 走 <code>/ultrareview</code>）。</p>
+    <p>表里新增、值得点名的：<code>/workflows</code>（看 feature）、<code>/auto-mode-setup</code>（要 workspace，且满足 auto 条件）、<code>/artifacts</code>、<code>/background</code>、<code>/pause-memory</code>、<code>/reload-skills</code>、<code>/recap</code>、<code>/memory</code>（编辑 CLAUDE.md 和 memory 设置）。</p>
+
+    <h2 id="s3">3. Tool 协议：<code>src/Tool.ts</code><a class="anchor" href="#s3">#</a></h2>
+    <p><code>Tool</code> 不是简单的 <code>name + inputSchema + call()</code>。它是模型 schema、运行时执行、权限安全、UI 展示、进度、结果映射的完整协议。</p>
+    <p>一个 Tool 主要包含：</p>
+    <ul>
+      <li><strong>模型侧</strong>：<code>name</code>、<code>aliases</code>、<code>inputSchema</code>、<code>inputJSONSchema</code>、<code>prompt()</code>、<code>description()</code>、<code>searchHint</code>、<code>shouldDefer</code>、<code>alwaysLoad</code>。</li>
+      <li><strong>执行侧</strong>：<code>call()</code>、<code>validateInput()</code>、<code>isEnabled()</code>、<code>isConcurrencySafe()</code>、<code>isReadOnly()</code>、<code>isDestructive()</code>、<code>interruptBehavior()</code>。</li>
+      <li><strong>权限侧</strong>：<code>checkPermissions()</code>、<code>preparePermissionMatcher()</code>、<code>toAutoClassifierInput()</code>、<code>isOpenWorld()</code>、<code>requiresUserInteraction()</code>。</li>
+      <li><strong>路径/结果侧</strong>：<code>getPath()</code>、<code>maxResultSizeChars</code>、<code>mapToolResultToToolResultBlockParam()</code>、<code>backfillObservableInput()</code>。</li>
+      <li><strong>UI 侧</strong>：<code>renderToolUseMessage()</code>、<code>renderToolResultMessage()</code>、<code>renderToolUseProgressMessage()</code>、<code>renderToolUseRejectedMessage()</code>、<code>renderGroupedToolUse()</code>、<code>extractSearchText()</code>。</li>
+    </ul>
+    <p><code>ToolUseContext</code> 也很重，里面有 commands、tools、MCP clients/resources、agent definitions、permission context、AppState getter/setter、tool JSX setter、notification、OS notification、memory attachment 状态、query tracking、file reading limits、content replacement state 等。</p>
+    <p>这意味着 Tool 在系统里既是“模型能看见的能力”，也是“UI 能展示的交互单元”，还是“权限系统能判断的动作对象”。</p>
+    <h3><code>buildTool()</code> 的意义</h3>
+    <p><code>Tool.ts</code> 末尾的 <code>buildTool()</code> 给常用字段填安全默认值：</p>
+    <ul>
+      <li><code>isEnabled</code> 默认 <code>true</code>；</li>
+      <li><code>isConcurrencySafe</code> 默认 <code>false</code>，保守地不并发；</li>
+      <li><code>isReadOnly</code> 默认 <code>false</code>，保守地认为可能写；</li>
+      <li><code>isDestructive</code> 默认 <code>false</code>；</li>
+      <li><code>checkPermissions</code> 默认 allow，但安全相关工具应覆盖；</li>
+      <li><code>toAutoClassifierInput</code> 默认空字符串，安全相关工具必须覆盖；</li>
+      <li><code>userFacingName</code> 默认工具名。</li>
+    </ul>
+    <p>这降低了每个工具实现的样板代码，同时让调用方总能面对完整 <code>Tool</code> 对象。</p>
+
+    <h2 id="s4">4. 工具注册表：<code>src/tools.ts</code><a class="anchor" href="#s4">#</a></h2>
+    <p><code>getAllBaseTools()</code> 是工具集合的 source of truth。默认和条件工具包括：</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>工具族</th><th>代表工具</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>文件</td><td><code>FileReadTool</code>、<code>FileEditTool</code>、<code>FileWriteTool</code>、<code>NotebookEditTool</code></td><td>读写编辑文件和 Notebook</td></tr>
+        <tr><td>Shell</td><td><code>BashTool</code>、<code>PowerShellTool</code></td><td>PowerShell：Windows 没 Git Bash 默认开，有则看 <code>tengu_cobalt_ridge</code></td></tr>
+        <tr><td>检索</td><td><code>GlobTool</code>、<code>GrepTool</code>、<code>WebSearchTool</code>、<code>WebFetchTool</code></td><td>本地与 Web 检索</td></tr>
+        <tr><td>Agent</td><td><code>AgentTool</code>、<code>SendMessageTool</code></td><td>子代理、多代理。<code>TeamCreate</code>/<code>TeamDelete</code> 已在 2.1.178 移除</td></tr>
+        <tr><td>Plan</td><td><code>EnterPlanModeTool</code>、<code>ExitPlanModeV2Tool</code>、<code>AskUserQuestionTool</code></td><td>计划模式、退出计划、澄清问题</td></tr>
+        <tr><td>任务清单</td><td><code>TaskCreate</code> / <code>Get</code> / <code>Update</code> / <code>List</code>、<code>TodoWrite</code></td><td>v2 默认 Task 四件套，v1 为 TodoWrite。2.1.233 新模型两套都不给，见 <a href="./todo-tools-gating.html">Todo 门控</a></td></tr>
+        <tr><td>后台任务</td><td><code>TaskOutput</code>、<code>TaskStop</code></td><td>读/停后台 agent 或 shell</td></tr>
+        <tr><td>MCP</td><td><code>ListMcpResources</code>、<code>ReadMcpResource</code>、动态 MCP tools</td><td>2.1.233 没有单独的 <code>McpAuth</code></td></tr>
+        <tr><td>记忆 / 编排</td><td><code>memory_list</code> / <code>read</code> / <code>write</code>、<code>Workflow</code>、<code>Monitor</code></td><td>2.1.233 工具表里的一等公民</td></tr>
+        <tr><td>Worktree/技能</td><td><code>EnterWorktreeTool</code>、<code>ExitWorktreeTool</code>、<code>SkillTool</code></td><td>工作树、技能调用。2.1.233 没有 <code>Config</code> 工具</td></tr>
+        <tr><td>实验/内部</td><td><code>REPL</code> 等</td><td>Tungsten / WebBrowser / TerminalCapture / Snip 不在 2.1.233 工具表</td></tr>
+      </tbody>
+    </table></div>
+    <p><code>tools.ts</code> 还提供几个关键过滤：</p>
+    <ul>
+      <li><code>getToolsForDefaultPreset()</code>：列出 default preset 中启用的工具。</li>
+      <li>blanket deny 过滤：如果 permission context 对某个工具有整工具 deny rule，就在模型看见之前移除。</li>
+      <li>MCP server-level deny：例如 <code>mcp__server</code> 可以在暴露前过滤该 server 的工具。</li>
+      <li>ToolSearch 相关：部分工具可延迟加载，让模型先用 <code>ToolSearchTool</code> 找工具。</li>
+    </ul>
+
+    <h2 id="s5">5. 工具执行编排：<code>services/tools/*</code><a class="anchor" href="#s5">#</a></h2>
+    <p>真正执行 Tool 的逻辑不在 <code>query.ts</code> 里，而在 <code>src/services/tools</code>。</p>
+    <h3><code>toolOrchestration.ts</code></h3>
+    <p><code>runTools()</code> 会根据 <code>tool.isConcurrencySafe(input)</code> 分批：</p>
+    <ul>
+      <li>连续 concurrency-safe 工具批量并发执行；</li>
+      <li>非 concurrency-safe 工具单独串行执行；</li>
+      <li>默认最大并发来自 <code>CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY</code>，默认 10；</li>
+      <li>并发批的 contextModifier 会排队，在批结束后按 tool_use 顺序应用。</li>
+    </ul>
+    <p>这保证读/搜类操作可以并行，写/改状态类操作不会互相踩。</p>
+    <h3><code>toolExecution.ts</code></h3>
+    <p><code>runToolUse()</code> 是单个 tool use 的执行状态机。它负责：</p>
+    <ul>
+      <li>按 name/alias 找工具，不存在则返回 tool_result error；</li>
+      <li>input schema 校验；</li>
+      <li><code>validateInput()</code>；</li>
+      <li>权限与 <code>canUseTool()</code>；</li>
+      <li>PreToolUse / PostToolUse / PermissionRequest hooks；</li>
+      <li>progress message；</li>
+      <li>telemetry 与 tracing；</li>
+      <li>MCP auth/session error 包装；</li>
+      <li>tool result 大小处理与落盘；</li>
+      <li>UI/模型所需的 tool_result message 生成。</li>
+    </ul>
+    <h3><code>StreamingToolExecutor.ts</code></h3>
+    <p>当 <code>streamingToolExecution</code> gate 开启时，模型流式输出 tool_use block 后，工具可提前开始执行，而不是等整条 assistant message 完成。</p>
+    <p>它的策略是：</p>
+    <ul>
+      <li>concurrency-safe 工具可并行；</li>
+      <li>非 concurrency-safe 工具独占；</li>
+      <li>progress 立即 yield；</li>
+      <li>结果按工具出现顺序缓冲输出；</li>
+      <li>streaming fallback 时 discard 已启动工具，避免旧 tool_use_id 的结果污染新响应；</li>
+      <li>Bash 失败会中止 sibling tools，因为 shell 命令常有隐式依赖链；Read/WebFetch 等失败不会取消其他工具；</li>
+      <li>支持 <code>interruptBehavior()</code>，用户新输入时某些工具可取消，某些工具必须阻塞等待。</li>
+    </ul>
+
+    <h2 id="s6">6. 权限决策链路<a class="anchor" href="#s6">#</a></h2>
+    <p>权限入口在 <code>hooks/useCanUseTool.tsx</code>，核心规则在 <code>utils/permissions/permissions.ts</code>。简化后的决策顺序：</p>
+    <ol>
+      <li>整工具 deny rule。</li>
+      <li>整工具 ask rule。</li>
+      <li>工具自己的 <code>checkPermissions()</code>，例如 Bash 子命令规则、文件路径安全检查。</li>
+      <li>工具明确 deny。</li>
+      <li><code>requiresUserInteraction()</code> 的工具即使在 bypass 相关场景也不能静默执行。</li>
+      <li>内容级 ask rule 和 safetyCheck 会优先于 bypass。</li>
+      <li><code>bypassPermissions</code> 或 plan+原本 bypass 可直接 allow。</li>
+      <li>整工具 allow rule。</li>
+      <li>passthrough 转 ask。</li>
+      <li><code>dontAsk</code> 把 ask 转 deny。</li>
+      <li><code>auto</code> 模式走 classifier / fast path / deny tracking。</li>
+      <li>headless 或 async agent 不能弹窗时，先跑 PermissionRequest hooks，再自动 deny。</li>
+      <li>interactive 模式进入权限 UI，也可能同时 race bridge/channel callbacks、hooks、classifier。</li>
+    </ol>
+    <p>Auto mode 不是简单“自动同意”。它会：</p>
+    <ul>
+      <li>对某些安全检查保持不可自动批准；</li>
+      <li>对 acceptEdits 下会允许的安全编辑走 fast path；</li>
+      <li>对白名单工具跳过 classifier；</li>
+      <li>其余走分类器（默认两阶段 XML；HARD 外泄翻不过，SOFT 才允许点名放行）；</li>
+      <li>PowerShell 工具如果在，跟 Bash 一样走预检 / 白名单 / 分类器；</li>
+      <li>分类器不可用时 fail-closed；</li>
+      <li>连续/总 deny 超限后，交互退回人工，headless 中止。</li>
+    </ul>
+    <p>细节见 <a href="./auto-mode-deep-dive.html">Auto Mode 深度解析</a>。</p>
+
+    <h2 id="s7">7. BashTool 为什么很重<a class="anchor" href="#s7">#</a></h2>
+    <p><code>tools/BashTool</code> 是最复杂的工具族之一，因为它既要执行命令，又要理解命令。相关能力包括：</p>
+    <ul>
+      <li><code>BashTool.tsx</code>：执行、输出截断/落盘、进度、后台任务、UI、sandbox、文件历史、图片输出处理。</li>
+      <li><code>bashPermissions.ts</code>：命令权限、前缀建议、compound command、heredoc、classifier、sandbox 规则。</li>
+      <li><code>utils/bash/treeSitterAnalysis.ts</code>：基于 tree-sitter AST 的 quote、compound、pipeline、subshell、heredoc、command substitution 等分析。</li>
+      <li><code>readOnlyValidation.ts</code>、<code>pathValidation.ts</code>、<code>sedValidation.ts</code>：只读约束、路径约束、sed 编辑约束。</li>
+      <li><code>commandSemantics.ts</code>：解释命令语义，用于展示和安全判断。</li>
+    </ul>
+    <p>这里的重点不是“能跑 shell”，而是尽量在复杂 shell 语法里保守判断风险。例如：</p>
+    <ul>
+      <li>compound command 数量过多会直接 fallback 到 ask，避免解析/校验导致 REPL 卡死；</li>
+      <li>heredoc 和多行命令不会轻易建议精确 allow rule，而会尽量提取稳定前缀；</li>
+      <li>shell wrapper、<code>sudo</code>、<code>env</code>、<code>xargs</code> 等危险前缀不会被自动建议成宽泛规则；</li>
+      <li>tree-sitter 用来区别真实操作符和被转义/引用的字符，避免只靠正则误判。</li>
+    </ul>
+
+    <h2 id="s8">8. AgentTool 与多代理<a class="anchor" href="#s8">#</a></h2>
+    <p><code>tools/AgentTool/AgentTool.tsx</code> 说明系统已经把“代理调用代理”当作主路径。它支持：</p>
+    <ul>
+      <li><code>subagent_type</code>：按 agent definition 选择专用 agent；</li>
+      <li><code>model</code> override；</li>
+      <li><code>run_in_background</code>；</li>
+      <li><code>name</code>：注册到 <code>agentNameRegistry</code>，供 <code>SendMessage</code> 按名路由；</li>
+      <li><code>name</code>：拉队友。<code>team_name</code> 仍接受但已忽略（2.1.178 起隐式成团）；</li>
+      <li><code>isolation: worktree</code>：创建临时 git worktree；</li>
+      <li>内部构建可有 <code>isolation: remote</code>，将任务发到 CCR remote 环境；</li>
+      <li>fork subagent、in-process teammate、async agent、remote agent 等多条路径。</li>
+    </ul>
+    <p>AgentTool 与 Task 系统关系紧密：同步子代理可以直接返回结果；后台/远程子代理会注册 task，输出写文件，UI/模型再通过 task tools 查看状态。</p>
+
+    <h2 id="s9">9. 任务系统：<code>src/Task.ts</code>、<code>src/tasks.ts</code><a class="anchor" href="#s9">#</a></h2>
+    <p><code>Task.ts</code> 定义任务协议：</p>
+    <ul>
+      <li><code>TaskType</code>：<code>local_bash</code>、<code>local_agent</code>、<code>remote_agent</code>、<code>in_process_teammate</code>、<code>local_workflow</code>、<code>monitor_mcp</code>、<code>dream</code>。</li>
+      <li><code>TaskStatus</code>：<code>pending</code>、<code>running</code>、<code>completed</code>、<code>failed</code>、<code>killed</code>。</li>
+      <li><code>isTerminalTaskStatus()</code>：终态判断。</li>
+      <li><code>TaskStateBase</code>：id、type、status、description、start/end、outputFile、outputOffset、notified 等。</li>
+      <li><code>generateTaskId()</code>：按类型前缀 + 8 位 base36 随机串，例如 <code>b...</code>、<code>a...</code>、<code>r...</code>。注释明确提到要抵抗 symlink brute-force。</li>
+      <li><code>getTaskOutputPath(id)</code>：任务输出落盘，支持 offset 增量读取。</li>
+    </ul>
+    <p><code>tasks.ts</code> 是注册表：默认有 <code>LocalShellTask</code>、<code>LocalAgentTask</code>、<code>RemoteAgentTask</code>、<code>DreamTask</code>，按 feature 可追加 <code>LocalWorkflowTask</code> 与 <code>MonitorMcpTask</code>。</p>
+
+    <h2 id="s10">10. 阅读建议<a class="anchor" href="#s10">#</a></h2>
+    <ul>
+      <li>想看 <code>/xxx</code> 怎么工作：从 <code>commands.ts</code> 找命令，再看 <code>commands/&lt;name&gt;</code>。</li>
+      <li>想看模型为什么能用某能力：从 <code>tools.ts</code> 找 Tool，再看 <code>tools/&lt;ToolName&gt;</code>。</li>
+      <li>想看一次 tool use 如何执行：读 <code>services/tools/toolExecution.ts</code> 与 <code>toolOrchestration.ts</code>。</li>
+      <li>想看权限：读 <code>useCanUseTool.tsx</code>、<code>utils/permissions/permissions.ts</code>、具体 Tool 的 <code>checkPermissions()</code>。</li>
+      <li>想看后台与多代理：读 <code>Task.ts</code>、<code>tasks.ts</code>、<code>tasks/*</code>、<code>AgentTool</code>。</li>
+    </ul>
+
+    <nav class="page-nav">
+      <a class="prev" href="./startup-runtime.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">启动与运行时</span>
+      </a>
+      <a class="next" href="./ui-state.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">UI、状态与交互</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

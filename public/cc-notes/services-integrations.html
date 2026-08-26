@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>服务与外部集成 · Claude Code 源码笔记</title>
+<meta name="description" content="services/utils 分工、多 provider API、MCP 子系统、插件技能生态、权限安全、compact/memory、LSP/IDE/Chrome、CCR bridge、settings。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>架构主线<span class="sep">/</span>服务与外部集成</div>
+  <header class="page-head">
+    <span class="eyebrow">架构主线 · 04</span>
+    <h1>服务与外部集成</h1>
+    <p class="lead">services 和 utils 撑起 CLI 的外围能力：多 provider API、MCP、插件与技能、权限、长上下文、LSP/IDE/Chrome、远程桥接和托管设置。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s1"><span class="num">1</span>services 与 utils 的分工</a></li>
+        <li><a href="#s2"><span class="num">2</span>API 与模型 provider</a></li>
+        <li><a href="#s3"><span class="num">3</span>Analytics、GrowthBook、Telemetry</a></li>
+        <li><a href="#s4"><span class="num">4</span>MCP 子系统</a></li>
+        <li><a href="#s5"><span class="num">5</span>MCP 与上层产品的连接</a></li>
+        <li><a href="#s6"><span class="num">6</span>插件与技能生态</a></li>
+        <li><a href="#s7"><span class="num">7</span>权限与安全基础设施</a></li>
+        <li><a href="#s8"><span class="num">8</span>Compact、memory 与上下文治理</a></li>
+        <li><a href="#s9"><span class="num">9</span>LSP、IDE、Chrome、Computer Use</a></li>
+        <li><a href="#s10"><span class="num">10</span>Remote bridge / CCR</a></li>
+        <li><a href="#s11"><span class="num">11</span>remote / server / cli transport</a></li>
+        <li><a href="#s12"><span class="num">12</span>Settings、托管设置、policy limits</a></li>
+        <li><a href="#s13"><span class="num">13</span>vendor 目录</a></li>
+        <li><a href="#s14"><span class="num">14</span>这一层的结论</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s1">1. services 与 utils 的分工<a class="anchor" href="#s1">#</a></h2>
+    <p><code>src/services</code> 更像业务服务层：API、MCP、analytics、compact、LSP、OAuth、remote managed settings、policy limits、memory sync 等都在这里。</p>
+    <p><code>src/utils</code> 是最大目录，更像横切基础设施层：plugins、permissions、settings、model、bash、shell、computer use、telemetry、worktree、session storage、secure storage、hooks、teleport 等都在这里。</p>
+    <p>简单说：</p>
+    <ul>
+      <li><code>services</code> 负责“一个完整业务能力如何对外工作”；</li>
+      <li><code>utils</code> 负责“所有业务能力都要用到的基础机制”。</li>
+    </ul>
+
+    <h2 id="s2">2. API 与模型 provider<a class="anchor" href="#s2">#</a></h2>
+    <p><code>src/services/api/client.ts</code> 把多种模型后端统一成 Anthropic SDK 风格客户端。支持的主要分支：</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Provider</th><th>触发条件</th><th>认证/配置要点</th></tr></thead>
+      <tbody>
+        <tr><td>Anthropic first-party</td><td>默认</td><td>API key 或 Claude.ai OAuth token，自定义 headers，base URL，request id</td></tr>
+        <tr><td>Bedrock</td><td><code>CLAUDE_CODE_USE_BEDROCK</code></td><td>AWS region、小模型 region override、AWS bearer token、AWS credential refresh</td></tr>
+        <tr><td>Foundry</td><td><code>CLAUDE_CODE_USE_FOUNDRY</code></td><td>Azure Foundry API key 或 Azure AD <code>DefaultAzureCredential</code></td></tr>
+        <tr><td>Vertex</td><td><code>CLAUDE_CODE_USE_VERTEX</code></td><td>GCP credential refresh、GoogleAuth、model-specific region、project id fallback</td></tr>
+      </tbody>
+    </table></div>
+    <p>client 统一注入 <code>x-app</code>、User-Agent、session id、container/remote session id、SDK client app 等 headers。对 first-party API，还会通过 fetch wrapper 添加 <code>x-client-request-id</code>，让 timeout 等无服务端 request id 的故障也能关联日志。</p>
+    <p>这个设计说明模型 provider 兼容是运行时能力，而不是编译时换包。</p>
+
+    <h2 id="s3">3. Analytics、GrowthBook、Telemetry<a class="anchor" href="#s3">#</a></h2>
+    <p><code>services/analytics</code> 不只是统计事件，也承担 feature gate 动态控制。几个关键点：</p>
+    <ul>
+      <li><code>entrypoints/init.ts</code> 会延后动态导入 1P event logging / GrowthBook / OpenTelemetry 相关依赖，降低冷启动成本。</li>
+      <li><code>initializeTelemetryAfterTrust()</code> 把遥测初始化放到 trust 之后，remote settings 用户还会先等待设置加载并重新应用环境变量。</li>
+      <li>GrowthBook gate 控制大量能力：streaming tool execution、bridge v2、context collapse、auto mode、history snip、MCP skills、workflow、assistant 等。</li>
+      <li><code>utils/telemetry/sessionTracing.ts</code>、<code>services/tools/toolExecution.ts</code> 里有 tool span、blocked-on-user span、content event 等细粒度 tracing。</li>
+    </ul>
+    <p>也就是说，analytics 层同时是观测系统和动态配置系统。</p>
+
+    <h2 id="s4">4. MCP 子系统<a class="anchor" href="#s4">#</a></h2>
+    <p><code>src/services/mcp/client.ts</code> 是最复杂的服务之一，MCP 在这里已经是一条完整产品线。</p>
+    <h3>支持的 transport</h3>
+    <p>代码里能看到这些 server 类型：</p>
+    <ul>
+      <li><code>stdio</code>：本地子进程；</li>
+      <li><code>sse</code>；</li>
+      <li><code>http</code> / Streamable HTTP；</li>
+      <li><code>ws</code> / websocket；</li>
+      <li><code>sse-ide</code> / <code>ws-ide</code>：IDE 集成；</li>
+      <li><code>claudeai-proxy</code>：通过 claude.ai MCP proxy；</li>
+      <li><code>sdk</code>：SDK 同进程 control transport；</li>
+      <li>特殊 in-process server：Claude in Chrome、Computer Use MCP。</li>
+    </ul>
+    <p>MCP transport 处理了很多真实环境问题：</p>
+    <ul>
+      <li>HTTP POST 必须带 <code>Accept: application/json, text/event-stream</code>；</li>
+      <li>GET SSE stream 不加普通 request timeout；</li>
+      <li>每个 POST 使用新 timeout signal，避免 stale <code>AbortSignal.timeout()</code>；</li>
+      <li>401/Unauthorized 会进入 needs-auth 状态，并写 15 分钟 auth cache；</li>
+      <li>claude.ai proxy fetch 带 OAuth bearer token，并在 401 时刷新 token 后重试一次；</li>
+      <li>HTTP session expired 通过 404 + JSON-RPC <code>-32001</code> 检测，清连接缓存并重连；</li>
+      <li>SSE 最大重连耗尽时主动 close client，让 pending tool calls reject 而不是挂死；</li>
+      <li>stdio server cleanup 会按 SIGINT → SIGTERM → SIGKILL 快速升级。</li>
+    </ul>
+    <h3>MCP tool/prompt/resource 映射</h3>
+    <p>MCP server 连接成功后会并行抓取：</p>
+    <ul>
+      <li><code>tools/list</code> → 转成内部 <code>Tool</code>；</li>
+      <li><code>prompts/list</code> → 转成 slash <code>Command</code>；</li>
+      <li><code>resources/list</code> → 转成 <code>ServerResource</code>；</li>
+      <li>可选 <code>skill://</code> resources → MCP skills。</li>
+    </ul>
+    <p>MCP tool 转内部 Tool 时会处理：</p>
+    <ul>
+      <li>名称：默认 <code>mcp__server__tool</code>，SDK no-prefix 模式可保留原名；</li>
+      <li><code>mcpInfo</code>：保留原始 server/tool name，用于权限；</li>
+      <li><code>annotations.readOnlyHint/destructiveHint/openWorldHint</code>；</li>
+      <li><code>_meta['anthropic/searchHint']</code> 与 <code>_meta['anthropic/alwaysLoad']</code>；</li>
+      <li>description/instructions 最大 2048 字符裁剪；</li>
+      <li><code>checkPermissions()</code> 默认要求 MCP 权限，并给出 addRules suggestion；</li>
+      <li>progress：started/progress/completed/failed；</li>
+      <li>Claude in Chrome / Computer Use MCP 的工具渲染 override。</li>
+    </ul>
+    <p>MCP prompt 会转成 <code>type: 'prompt'</code> 的 Command，名字形如 <code>mcp__server__prompt</code>，执行时调用 <code>client.getPrompt()</code> 并把返回 content 转成模型消息块。</p>
+    <h3>MCP result 处理</h3>
+    <p>MCP 结果不是直接塞上下文：</p>
+    <ul>
+      <li>text 直接变 text block；</li>
+      <li>image 会 resize/downsample；</li>
+      <li>audio/binary blob 会落盘，返回文件路径说明；</li>
+      <li>resource text/blob/resource_link 分别处理；</li>
+      <li><code>structuredContent</code> 会转 JSON，并推断 compact schema；</li>
+      <li>大结果可持久化为文件并返回读取说明；含图片的大结果不持久化为 JSON，而是回退截断，保留图片可视性。</li>
+    </ul>
+    <p>URL elicitation 也被纳入工具调用流程：当 MCP 返回 <code>UrlElicitationRequired</code> (<code>-32042</code>) 时，会先跑 hooks，再根据 headless/SDK 或 REPL 走 structuredIO callback 或 UI queue，用户完成后重试 tool call，最多 3 次。</p>
+
+    <h2 id="s5">5. MCP 与上层产品的连接<a class="anchor" href="#s5">#</a></h2>
+    <p>MCP 不是孤立 service，它贯穿多层：</p>
+    <ul>
+      <li><code>services/mcp/client.ts</code>：连接、工具/资源/prompt 转换、认证、结果处理。</li>
+      <li><code>tools/MCPTool</code>、<code>ListMcpResourcesTool</code>、<code>ReadMcpResourceTool</code>、<code>ReadMcpResourceDirTool</code>、<code>RefreshMcpTools</code>、<code>SearchMcpRegistry</code>：模型可调用面。2.1.233 没有单独的 <code>McpAuth</code>。</li>
+      <li><code>commands/mcp/*</code>：用户管理面。</li>
+      <li><code>components/mcp/*</code>：UI 状态与面板。</li>
+      <li><code>AppState.mcp</code>：clients/tools/commands/resources/pluginReconnectKey。</li>
+      <li><code>commands.ts</code>：MCP prompt/skill 进入 slash/SkillTool 生态。</li>
+      <li><code>utils/permissions</code>：MCP 工具名和 server-level rule 匹配。</li>
+    </ul>
+    <p>这就是为什么文档里说 MCP 是“完整产品线”，而不是简单第三方接口。</p>
+
+    <h2 id="s6">6. 插件与技能生态<a class="anchor" href="#s6">#</a></h2>
+    <p>插件相关代码主要分布在：</p>
+    <ul>
+      <li><code>utils/plugins/*</code>：发现、安装、缓存、市场、版本、策略、校验、加载、hot reload。</li>
+      <li><code>commands/plugin/*</code>：插件市场、安装、启用/禁用、信任、错误展示。</li>
+      <li><code>plugins/bundled/*</code>、<code>plugins/builtinPlugins.ts</code>：内建/捆绑插件。</li>
+      <li><code>commands.ts</code>：插件 commands、plugin skills 进入命令系统。</li>
+      <li><code>services/mcp</code>：插件也可以带 MCP servers。</li>
+      <li><code>AppState.plugins</code>：enabled/disabled/errors/installationStatus/needsRefresh。</li>
+    </ul>
+    <p>Skills 也有多来源：<code>skills/bundled</code>、用户 skill dirs、plugin skills、builtin plugin skills、dynamic skills、MCP skills。</p>
+    <p>命令系统会把它们统一成 prompt 型 Command，再由 <code>SkillTool</code> 暴露给模型。这说明“插件 + MCP + 技能”在产品上已经趋向统一扩展生态。</p>
+
+    <h2 id="s7">7. 权限与安全基础设施<a class="anchor" href="#s7">#</a></h2>
+    <p>权限涉及多个目录：</p>
+    <ul>
+      <li><code>utils/permissions/*</code>：规则、parser、loader、classifier、auto mode、deny tracking、permission update schema。</li>
+      <li><code>hooks/useCanUseTool.tsx</code> 与 <code>hooks/toolPermission/*</code>：权限调用入口、队列、interactive/coordinator/swarm/bridge/channel handler。</li>
+      <li><code>components/permissions/*</code>：用户审批 UI。</li>
+      <li><code>tools/*/checkPermissions()</code>：工具自己的安全规则。</li>
+      <li><code>utils/bash/*</code>、<code>tools/BashTool/*</code>：Shell AST 和命令风险控制。</li>
+      <li><code>utils/sandbox/*</code>：sandbox adapter。</li>
+    </ul>
+    <p>权限规则支持多来源：settings、policy、flag、CLI arg、command、session。规则可以是整工具，也可以是内容级，例如 <code>Bash(git status:*)</code> 或 MCP server-level <code>mcp__server</code>。关键安全特征：</p>
+    <ul>
+      <li>deny/ask/safetyCheck 优先于 bypass；</li>
+      <li><code>bypassPermissions</code> 仍会受 root/sudo、sandbox、网络可达性等启动校验约束；</li>
+      <li>auto mode 不是无条件放行，而是结合 fast path、allowlist、classifier、deny tracking；</li>
+      <li>headless/async agent 无法弹窗时，会先跑 PermissionRequest hooks，再自动 deny；</li>
+      <li>Bash 使用 tree-sitter 与多层 validator，避免纯正则判断复杂 shell。</li>
+    </ul>
+
+    <h2 id="s8">8. Compact、memory 与上下文治理<a class="anchor" href="#s8">#</a></h2>
+    <p>长上下文治理散布在几处：</p>
+    <ul>
+      <li><code>services/compact/autoCompact.ts</code>、<code>compact.ts</code>：自动 compact 与 compact message 构造。</li>
+      <li><code>services/compact/microCompact.ts</code>、<code>sessionMemoryCompact.ts</code>、<code>postCompactCleanup.ts</code>：旧工具结果清理、session-memory compact、压缩后缓存清理。</li>
+      <li><code>query.ts</code>：prompt-too-long / media-size / max-output-tokens 等错误后的恢复分支，以及 history snip、context collapse feature 分支。</li>
+      <li><code>utils/toolResultStorage.ts</code>：大 tool result 替换/落盘。</li>
+      <li><code>utils/attachments.ts</code>：memory/file-change/queued command attachments。</li>
+      <li><code>services/SessionMemory</code>、<code>memdir/*</code>、<code>services/teamMemorySync/*</code>、<code>services/extractMemories/*</code>：会话/团队记忆。</li>
+      <li><code>memory_list</code> / <code>memory_read</code> / <code>memory_write</code>：连上的 project memory store，和本地 auto memory 目录不是一条路。</li>
+    </ul>
+    <p>这说明项目把 token/context 当成长期运行时资源管理，而不是“超过就报错”。reactive compact / context collapse 走 <code>query.ts</code> 与 compact / microcompact / session-memory compact 这些路径。</p>
+
+    <h2 id="s9">9. LSP、IDE、Chrome、Computer Use<a class="anchor" href="#s9">#</a></h2>
+    <p>外部开发环境集成主要包括：</p>
+    <ul>
+      <li><code>services/lsp</code>：LSP manager，与 <code>LSPTool</code>、插件推荐、IDE 状态相关。</li>
+      <li><code>utils/ide</code> 与 MCP IDE transport：IDE server 连接、<code>callIdeRpc()</code>。</li>
+      <li><code>utils/claudeInChrome</code>：Chrome MCP server 可 in-process 启动，避免大子进程开销。</li>
+      <li><code>utils/computerUse</code>：Computer Use MCP wrapper、锁、执行器、平台适配、UI 状态。</li>
+      <li>Chrome / Computer Use 走 MCP，不单独占 2.1.233 工具表里的 <code>WebBrowser</code> / <code>Tungsten</code> 名。</li>
+    </ul>
+    <p>这些能力说明 CLI 的“外部世界”不只是文件系统和 shell，还包括 IDE、浏览器、桌面应用和远程会话。</p>
+
+    <h2 id="s10">10. Remote bridge / CCR<a class="anchor" href="#s10">#</a></h2>
+    <p><code>src/bridge</code> 是远程控制与 session ingress 的主链路。这里有两类重要路径。</p>
+    <h3>env-based bridge：<code>bridgeMain.ts</code> / <code>replBridge.ts</code></h3>
+    <p>传统路径会注册 environment、创建 session、poll work、spawn child CLI、heartbeat、stop work、cleanup。<code>bridgeMain.ts</code> 的 <code>runBridgeLoop()</code> 管理：active sessions；work id 与 session id 映射；session ingress JWT；token refresh；heartbeat 与 auth failure re-dispatch；worktree 创建/删除；timeout watchdog；capacity wake；fatal backoff 与 shutdown cleanup。</p>
+    <p><code>sessionRunner.ts</code> 会真正 spawn 子进程：</p>
+    <pre><code>claude --print --sdk-url &lt;url&gt; --session-id &lt;id&gt;
+       --input-format stream-json --output-format stream-json
+       --replay-user-messages</code></pre>
+    <p>子进程环境会带 <code>CLAUDE_CODE_SESSION_ACCESS_TOKEN</code>，并可启用 CCR v2 env vars。父进程解析子进程 stdout NDJSON，提取 tool activity、assistant text、result、control_request，并通过 stdin 下发 token refresh 或控制消息。</p>
+    <h3>env-less bridge：<code>remoteBridgeCore.ts</code></h3>
+    <p><code>remoteBridgeCore.ts</code> 明确说明了“env-less Remote Control bridge core”：</p>
+    <ol>
+      <li><code>POST /v1/code/sessions</code> 创建 session；</li>
+      <li><code>POST /v1/code/sessions/{id}/bridge</code> 用 OAuth 换 worker JWT、api base URL、worker epoch；</li>
+      <li>用 <code>createV2ReplTransport()</code> 建 SSE + CCRClient；</li>
+      <li>token refresh 时重新调用 <code>/bridge</code>，因为每次会 bump epoch；</li>
+      <li>SSE 401 时重建 transport。</li>
+    </ol>
+    <p>它去掉了 Environments API 的 register/poll/ack/stop/heartbeat/deregister 生命周期，更适合 REPL 远程控制。文件注释也强调：env-less 说的是去掉 environment/poll dispatch 层，不等同于 CCR v2 transport 本身。</p>
+
+    <h2 id="s11">11. remote / server / cli transport<a class="anchor" href="#s11">#</a></h2>
+    <ul>
+      <li><code>src/remote</code>：远程会话管理、sessions websocket、viewer 类能力。</li>
+      <li><code>src/server</code>：直连 session 与 server 侧抽象。</li>
+      <li><code>src/cli/transports</code>：headless/remote IO 的 HybridTransport、SSETransport、WebSocketTransport、event uploader、worker state uploader。</li>
+    </ul>
+    <p>这些模块共同把本地 CLI、SDK、远程 Web/Mobile、CCR worker 串起来。</p>
+
+    <h2 id="s12">12. Settings、remote managed settings、policy limits<a class="anchor" href="#s12">#</a></h2>
+    <p>设置系统散布在：</p>
+    <ul>
+      <li><code>utils/settings/*</code>：读取、校验、应用、变更检测、MDM raw read。</li>
+      <li><code>services/remoteManagedSettings/*</code>：远端托管设置。</li>
+      <li><code>services/policyLimits/*</code>：策略限制。</li>
+      <li><code>utils/managedEnv.ts</code>：从配置应用环境变量。</li>
+      <li><code>AppStateProvider</code> / <code>applySettingsChange()</code>：设置变化同步到 UI 状态。</li>
+    </ul>
+    <p>关键设计是“trust 前后分层”：trust 前只应用 safe env；trust 后才完整应用环境与遥测。远端策略还能在会话中禁用 bypass permissions 等高风险能力。</p>
+
+    <h2 id="s13">13. vendor 目录<a class="anchor" href="#s13">#</a></h2>
+    <p><code>recovered/vendor</code> 只有四个包装：</p>
+    <ul>
+      <li><code>audio-capture-src/index.ts</code></li>
+      <li><code>image-processor-src/index.ts</code></li>
+      <li><code>modifiers-napi-src/index.ts</code></li>
+      <li><code>url-handler-src/index.ts</code></li>
+    </ul>
+    <p>数量少但意义明确：平台/原生能力被封装在 vendor 层，主仓主体仍是 TypeScript 业务与运行时代码。</p>
+
+    <h2 id="s14">14. 这一层的结论<a class="anchor" href="#s14">#</a></h2>
+    <p>这一层覆盖的外围能力：</p>
+    <ul>
+      <li>API provider 与认证让它能运行在不同云和账号形态；</li>
+      <li>MCP/插件/技能构成扩展生态；</li>
+      <li>权限、sandbox、bash AST、classifier 让工具执行有治理；</li>
+      <li>compact/memory/tool result storage 让长会话可持续；</li>
+      <li>bridge/remote/cli transports 让本地终端变成远程 session endpoint；</li>
+      <li>settings/policy/telemetry 让它具备产品化运营和企业托管能力。</li>
+    </ul>
+
+    <nav class="page-nav">
+      <a class="prev" href="./ui-state.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">UI、状态与交互</span>
+      </a>
+      <a class="next" href="./hooks.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">Hooks 机制</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>

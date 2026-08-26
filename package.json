@@ -7,7 +7,8 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "sync:cc-notes": "bash scripts/sync-cc-notes.sh"
   },
   "dependencies": {
     "@astrojs/markdown-remark": "^7.2.0",

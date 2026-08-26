@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memory 机制 · Claude Code 源码笔记</title>
+<meta name="description" content="2.1.233 四套记忆面：auto / session / agent memory，以及 memory_list、memory_read、memory_write 连接的 project memory store。">
+<link rel="stylesheet" href="./assets/styles.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="brand" href="./index.html"><span class="mark"></span>Claude Code 源码笔记</a>
+    <div class="nav-links">
+      <a href="./index.html#arch">架构主线</a>
+      <a href="./index.html#topics">机制专题</a>
+      <a href="./enterprise-patterns.html" class="hide-sm">企业模式</a>
+    </div>
+  </div>
+</nav>
+
+<main class="page">
+  <div class="breadcrumb"><a href="./index.html">首页</a><span class="sep">/</span>机制专题<span class="sep">/</span>Memory 机制</div>
+  <header class="page-head">
+    <span class="eyebrow">机制专题 · 07</span>
+    <h1>Memory 机制</h1>
+    <p class="lead">2.1.233 有四套互不替代的记忆面：本地 auto memory、session memory、agent memory，以及连上的 project memory store（<code>memory_list</code> / <code>read</code> / <code>write</code>）。</p>
+  </header>
+
+  <div class="prose">
+    <nav class="toc">
+      <p class="toc-title">本页目录</p>
+      <ol>
+        <li><a href="#s0"><span class="num">0</span>memory_* 工具</a></li>
+        <li><a href="#s1"><span class="num">1</span>auto memory:跨会话持久记忆</a></li>
+        <li><a href="#s2"><span class="num">2</span>auto memory 何时写入</a></li>
+        <li><a href="#s3"><span class="num">3</span>auto memory 何时读取</a></li>
+        <li><a href="#s4"><span class="num">4</span>session memory:当前会话压缩用笔记</a></li>
+        <li><a href="#s5"><span class="num">5</span>agent memory</a></li>
+      </ol>
+    </nav>
+
+    <h2 id="s0">0. 2.1.233 的 memory_* 工具<a class="anchor" href="#s0">#</a></h2>
+    <p>这三件套操作的是<strong>已连接的 project memory store</strong>（带 store id，路径形如 <code>/project/&lt;id&gt;/MEMORY.md</code>），不是本地 <code>~/.claude/projects/.../memory/</code> 那条 Write/Edit。</p>
+    <ul>
+      <li><code>memory_list</code>：不传 <code>store</code> 就列本会话连上的 store（id、描述、可写/只读、索引路径）；传了就按 <code>path_prefix</code> 分页列文档。</li>
+      <li><code>memory_read</code>：读一篇，返回 content + 12 位 version。</li>
+      <li><code>memory_write</code>：整篇覆盖，上限 100KB；<code>if_version</code> 乐观并发（新建传字面量 <code>new</code>）。auto 模式下 <code>checkPermissions</code> 走 passthrough，交给分类器。</li>
+      <li>三个都 <code>shouldDefer</code>，进 ToolSearch。</li>
+      <li><code>isEnabled</code>：settings <code>orgMemoryRead !== false</code>，再叠 GrowthBook <code>tengu_haze_glass</code>、策略 <code>allow_memory_sync</code>、<code>CLAUDE_CODE_DISABLE_ORG_MEMORY</code>。没连上 store 时 list 会说 none / connecting。</li>
+    </ul>
+    <p>本地 auto memory 仍用 Write/Edit 写 <code>MEMORY.md</code> 目录。<code>/pause-memory</code> 暂停 automemory；<code>/memory</code> 编辑 CLAUDE.md 和 memory 设置。</p>
+
+    <h2 id="s1">1. auto memory:跨会话持久记忆<a class="anchor" href="#s1">#</a></h2>
+    <p>路径在 <code>memdir/paths.ts</code>:</p>
+    <ul>
+      <li>默认 base dir:<code>~/.claude</code></li>
+      <li>默认项目记忆目录:<code>~/.claude/projects/&lt;sanitized-git-root-or-project-root&gt;/memory/</code></li>
+      <li>入口索引:<code>MEMORY.md</code></li>
+      <li>支持 <code>CLAUDE_CODE_REMOTE_MEMORY_DIR</code>、<code>CLAUDE_COWORK_MEMORY_PATH_OVERRIDE</code>、settings 中 <code>autoMemoryDirectory</code> 覆盖。</li>
+      <li><code>isAutoMemoryEnabled()</code> 默认开启,但会被 <code>CLAUDE_CODE_DISABLE_AUTO_MEMORY</code>、<code>CLAUDE_CODE_SIMPLE</code>、远程无持久目录、settings <code>autoMemoryEnabled: false</code> 关闭。</li>
+    </ul>
+    <p><code>memdir/memdir.ts</code> 的 prompt 明确规定写入格式:</p>
+    <ol>
+      <li>记忆内容写到单独 <code>.md</code> 文件,带 frontmatter:name/description/type 等。</li>
+      <li><code>MEMORY.md</code> 只是索引,每条一行,未来会默认加载。</li>
+      <li>避免保存可从代码直接推导出的事实,主要保存用户偏好、反馈、项目背景、外部引用等。</li>
+    </ol>
+
+    <h2 id="s2">2. auto memory 何时写入<a class="anchor" href="#s2">#</a></h2>
+    <p>有两个写入来源:</p>
+    <h3>A. 主 agent 直接写</h3>
+    <p>system prompt 中会告诉模型:用户明确要求 remember/forget 时立即写入 memory。此时模型会用 <code>Write</code>/<code>Edit</code> 写到 auto memory 目录。权限层对 auto memory 有特殊放行和安全校验:<code>memdir/paths.ts</code>、<code>utils/permissions/filesystem.ts</code>、<code>utils/memoryFileDetection.ts</code> 会识别 auto memory 路径。</p>
+    <h3>B. 后台 extractMemories subagent 写</h3>
+    <p><code>services/extractMemories/extractMemories.ts</code>:</p>
+    <ul>
+      <li>初始化:<code>initExtractMemories()</code>。</li>
+      <li>触发:完整 query loop 结束、模型给出无工具调用的最终响应后,经 stop hook/post-sampling 类链路 fire-and-forget 执行。</li>
+      <li>只在主 agent 运行,subagent 不跑。</li>
+      <li>受 gate <code>tengu_passport_quail</code>、<code>isAutoMemoryEnabled()</code>、remote mode 限制。</li>
+      <li>如果检测到主 agent 已经在本段消息中写过 auto memory,则跳过后台提取,避免重复写。</li>
+      <li>有节流:<code>tengu_bramble_lintel</code> 控制每 N 个 eligible turn 才提取一次。</li>
+      <li>有并发合并:提取进行中时,新请求只保留最新 context,当前完成后跑一个 trailing extraction。</li>
+      <li>forked agent <code>maxTurns: 5</code>,<code>skipTranscript: true</code>,只允许 <code>Read/Grep/Glob</code>、只读 Bash、以及 memory 目录内的 <code>Edit/Write</code>。</li>
+    </ul>
+    <p>这说明 memory 写入不是每轮都同步阻塞主流程,而是"主 agent 可显式写;没写时后台 agent 尽力补写"。</p>
+
+    <h2 id="s3">3. auto memory 何时读取<a class="anchor" href="#s3">#</a></h2>
+    <p>读取分三层:</p>
+    <ol>
+      <li><strong>启动/系统上下文加载</strong>:<code>loadMemoryPrompt()</code> 会创建 memory 目录并把 memory 行为说明放进 system prompt;<code>MEMORY.md</code> 的内容通过 CLAUDE.md/memory 文件加载链路进入 user context(索引有 200 行和 25KB 限制)。</li>
+      <li><strong>查询相关记忆预取</strong>:<code>utils/attachments.ts</code> 的 <code>startRelevantMemoryPrefetch()</code> 在用户 turn 开始时后台启动,调用 <code>findRelevantMemories()</code>。它扫描 memory 文件 frontmatter,再用 sideQuery 让 Sonnet 从 manifest 里最多选 5 个相关文件,结果作为 <code>relevant_memories</code> attachment 注入后续迭代。这个预取不会阻塞第一轮;如果没赶上,会跳过并下轮再试。</li>
+      <li><strong>模型主动读</strong>:prompt 的 "When to access memories" 要求在用户要求 recall/check/remember 时主动访问;模型可用 <code>Read/Grep/Glob</code> 搜 memory 目录。</li>
+    </ol>
+
+    <h2 id="s4">4. session memory:当前会话压缩用笔记<a class="anchor" href="#s4">#</a></h2>
+    <p><code>services/SessionMemory/sessionMemory.ts</code> 维护的是当前会话 notes,不等同于跨会话 memory。</p>
+    <p>写入位置:<code>utils/permissions/filesystem.ts</code> 的 <code>getSessionMemoryDir()</code> / <code>getSessionMemoryPath()</code>,位于 <code>~/.claude/session-memory/...</code> 体系下。</p>
+    <p>触发条件:</p>
+    <ul>
+      <li><code>initSessionMemory()</code> 在启动时注册 post-sampling hook,但只在非 remote 且 auto compact enabled 时启用。</li>
+      <li>2.1.233 制品里没有 <code>tengu_session_memory</code> 这个 GrowthBook 名。session memory 面还在：viewer、<code>current_session_memory</code> attachment、compact 仍读 notes。</li>
+      <li>默认初始化阈值:上下文达到 <code>10_000</code> token。</li>
+      <li>默认更新阈值:距离上次提取增长 <code>5_000</code> token。</li>
+      <li>默认工具调用阈值:3 次 tool calls。</li>
+      <li>满足 token + tool call,或 token 满足且最后 assistant turn 没有 tool call(自然停顿),才提取。</li>
+    </ul>
+    <p>写入方式:forked agent 读取 notes 文件,再只允许对该文件执行 <code>Edit</code>。默认模板包含 Current State、Task specification、Files and Functions、Errors &amp; Corrections、Worklog 等章节。</p>
+    <p>读取时机:</p>
+    <ul>
+      <li>session-memory compact 会读取它,把它变成压缩后的 summary 基础。</li>
+      <li>2.1.233 slash 表没有 <code>/summary</code>；提取靠 token/tool 阈值和 compact 前的等待。</li>
+      <li><code>waitForSessionMemoryExtraction()</code> 在 compact 前最多等待 15 秒,避免刚提取的 notes 来不及参与 compact。</li>
+    </ul>
+
+    <h2 id="s5">5. agent memory<a class="anchor" href="#s5">#</a></h2>
+    <p><code>tools/AgentTool/loadAgentsDir.ts</code> 支持 agent frontmatter <code>memory: user|project|local</code>。启用后会给 agent 注入 memory prompt,并在工具集合中确保 <code>Read/Edit/Write</code> 可用于 agent memory 文件。它是 subagent 专用的持久上下文,不等于主会话 auto memory。</p>
+
+    <nav class="page-nav">
+      <a class="prev" href="./context-compact-checkpoint.html">
+        <span class="dir">← 上一篇</span>
+        <span class="ttl">上下文、压缩与 checkpoint</span>
+      </a>
+      <a class="next" href="./permissions.html">
+        <span class="dir">下一篇 →</span>
+        <span class="ttl">权限审核机制</span>
+      </a>
+    </nav>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <p>Claude Code 源码分析笔记 · 现行行为以 2.1.233 为准</p>
+</footer>
+
+</body>
+</html>
