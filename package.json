@@ -11,11 +11,11 @@
     "sync:cc-notes": "bash scripts/sync-cc-notes.sh"
   },
   "dependencies": {
-    "@astrojs/markdown-remark": "^7.2.0",
-    "@astrojs/mdx": "^7.0.0",
-    "@astrojs/rss": "^4.0.18",
-    "@astrojs/sitemap": "^3.7.3",
-    "astro": "^7.0.0"
+    "@astrojs/markdown-remark": "^7.3.0",
+    "@astrojs/mdx": "^7.0.8",
+    "@astrojs/rss": "^4.0.19",
+    "@astrojs/sitemap": "^3.7.4",
+    "astro": "^7.3.1"
   },
   "devDependencies": {
     "unist-util-visit": "^5.1.0"
