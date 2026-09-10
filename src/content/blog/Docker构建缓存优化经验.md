@@ -193,11 +193,15 @@ docker buildx prune       # 清 cache（会让下次变冷构建）
 
 # 参考
 
-- Docker Docs — Optimize cache usage in builds: https://docs.docker.com/build/cache/optimize/
-- Docker Docs — `.dockerignore` files: https://docs.docker.com/build/concepts/context/#dockerignore-files
-- Docker Docs — Cache invalidation: https://docs.docker.com/build/cache/invalidation/
-- Docker Docs — `RUN --mount=type=cache`: https://docs.docker.com/reference/dockerfile/#run---mounttypecache
-- Docker Docs — Build cache backends: https://docs.docker.com/build/cache/backends/
+https://docs.docker.com/build/cache/optimize/
+
+https://docs.docker.com/build/concepts/context/#dockerignore-files
+
+https://docs.docker.com/build/cache/invalidation/
+
+https://docs.docker.com/reference/dockerfile/#run---mounttypecache
+
+https://docs.docker.com/build/cache/backends/
 
 # 小结
 
