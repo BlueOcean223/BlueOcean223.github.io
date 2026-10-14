@@ -130,6 +130,17 @@ th, td {
 }
 th { background: var(--bg-soft); font-family: var(--font-sans); font-weight: 600; }
 
+/* Added around every table by rehype-table-scroll: the table keeps its
+   full-width layout and only this wrapper scrolls when columns do not fit. */
+.table-scroll {
+  overflow-x: auto;
+  margin: 1.5em 0;
+}
+.table-scroll > table { margin: 0; }
+/* CJK headers can break between any two characters; keep them on one line
+   and let the wrapper scroll instead of stacking 整/个/应/用 vertically. */
+.table-scroll th { white-space: nowrap; }
+
 /* Layout helpers */
 .container {
   width: 100%;
@@ -278,4 +289,6 @@ th { background: var(--bg-soft); font-family: var(--font-sans); font-weight: 600
   .link-card-main { grid-template-columns: 1fr; }
   .link-card-image { width: 100%; height: auto; max-height: 160px; }
   .bleed { width: 100%; margin-left: 0; }
+  table { font-size: 0.88rem; }
+  th, td { padding: 0.45em 0.55em; }
 }
