@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Electron 各大版本的维护区间</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--font-mono); font-size: .92em; }
+svg { width: 100%; height: auto; display: block; font-family: var(--font-sans); }
+svg .row { transition: opacity .25s; }
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0 4px; }
+.read { font-family: var(--font-mono); font-size: 12.5px; color: var(--text-soft); background: var(--bg-soft); border-radius: 6px; padding: 6px 10px; }
+.apps { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 12px; margin-top: 12px; }
+.apps div { font-size: 12.5px; color: var(--text-soft); padding: 6px 10px; border-radius: 6px; background: var(--bg-soft); cursor: default; }
+.apps div.bad { background: #fbefe9; color: var(--accent-hover); }
+.apps .mono { color: var(--muted); }
+</style>
+</head>
+<body>
+<svg id="svg" viewBox="0 0 820 248"></svg>
+<input type="range" id="range" aria-label="日期" />
+<div class="read" id="read"></div>
+<div class="apps" id="apps"></div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const D = (s) => new Date(s + 'T00:00:00');
+  const DAY = 864e5;
+  const svg = $('#svg'), range = $('#range'), read = $('#read');
+  const d0 = D('2025-10-01'), d1 = D('2026-11-30'), today = D('2026-10-13');
+  const L = 78, R = 14, W = 820;
+  const x = (d) => L + ((d - d0) / (d1 - d0)) * (W - L - R);
+  const y = (i) => 44 + i * 27;
+  // 大版本 N 的维护在 N+3 发布时结束。
+  const M = [
+    { m: 39, s: '2025-10-27', e: '2026-05-05' },
+    { m: 40, s: '2026-01-15', e: '2026-06-30' },
+    { m: 41, s: '2026-03-10', e: '2026-08-24' },
+    { m: 42, s: '2026-05-05' },
+    { m: 43, s: '2026-06-30' },
+    { m: 44, s: '2026-08-24' },
+    { m: 45, beta: '2026-10-09' },
+  ];
+  let s = `<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="6" fill="#d97757" opacity=".45"/></pattern>
+    <linearGradient id="fade" x1="0" x2="1"><stop offset="0" stop-color="#d97757"/><stop offset="1" stop-color="#d97757" stop-opacity="0"/></linearGradient></defs>`;
+  for (let d = new Date(d0); d <= d1; d.setMonth(d.getMonth() + 1)) {
+    const xx = x(d);
+    s += `<line x1="${xx}" x2="${xx}" y1="24" y2="232" stroke="#efece4"/>`;
+    s += `<text x="${xx + 3}" y="18" font-size="10" fill="#87867f">${d.getMonth() === 0 ? d.getFullYear() + ' ' : ''}${d.getMonth() + 1}月</text>`;
+  }
+  M.forEach((r, i) => {
+    s += `<g class="row" data-m="${r.m}"><text x="8" y="${y(i) + 11}" font-size="11.5" fill="#3d3c38">Electron ${r.m}</text>`;
+    if (r.s && r.e) {
+      s += `<rect x="${x(D(r.s))}" y="${y(i)}" width="${x(D(r.e)) - x(D(r.s))}" height="15" rx="4" fill="#d97757"/>`;
+    } else if (r.s) {
+      s += `<rect x="${x(D(r.s))}" y="${y(i)}" width="${x(today) - x(D(r.s))}" height="15" rx="4" fill="#d97757"/>`;
+      s += `<rect x="${x(today)}" y="${y(i)}" width="${x(d1) - x(today)}" height="15" fill="url(#fade)" opacity=".5"/>`;
+    } else {
+      s += `<rect x="${x(D(r.beta))}" y="${y(i)}" width="${x(today) - x(D(r.beta)) + 26}" height="15" rx="4" fill="url(#hatch)"/><text x="${x(D(r.beta)) + 34}" y="${y(i) + 11}" font-size="10" fill="#87867f">beta</text>`;
+    }
+    s += '</g>';
+  });
+  s += `<line x1="${x(today)}" x2="${x(today)}" y1="26" y2="232" stroke="#141413" stroke-dasharray="2 3"/><text x="${x(today) - 4}" y="243" font-size="10" fill="#141413" text-anchor="end">今天</text>`;
+  s += '<g id="cur"><line y1="26" y2="232" stroke="#c15f3f" stroke-width="2"/><circle r="4" cy="26" fill="#c15f3f"/></g>';
+  svg.innerHTML = s;
+
+  const cur = $('#cur');
+  const rows = [...svg.querySelectorAll('.row')];
+  const start = D('2025-10-27');
+  range.min = 0;
+  range.max = Math.round((today - start) / DAY);
+  range.value = range.max;
+  function update() {
+    const d = new Date(start.getTime() + range.value * DAY);
+    cur.setAttribute('transform', `translate(${x(d)},0)`);
+    const live = M.filter((r) => r.s && D(r.s) <= d && (!r.e || D(r.e) > d)).map((r) => r.m);
+    rows.forEach((g) => { g.style.opacity = live.includes(+g.dataset.m) ? 1 : 0.32; });
+    read.textContent = `${d.getFullYear()} 年 ${d.getMonth() + 1} 月 ${d.getDate()} 日：官方维护 ${live.join('、')}`;
+  }
+  range.addEventListener('input', update);
+  update();
+
+  const APPS = [
+    ['Cursor', '40.10.3', '已停止维护，40 的最后一个补丁是 7 月 1 日的 40.10.6', 40, true],
+    ['Grok Bot', '42.1.0', '维护中，42 已经出到 42.11.12', 42],
+    ['Netcatty', '42.3.3', '维护中，42 已经出到 42.11.12', 42],
+    ['Visual Studio Code', '42.7.1', '维护中，42 已经出到 42.11.12', 42],
+    ['Clash Party', '43.7.3', '维护中', 43],
+    ['Claude', '44.4.3', '维护中', 44],
+  ];
+  const box = $('#apps');
+  for (const [name, v, note, m, bad] of APPS) {
+    const el = document.createElement('div');
+    if (bad) el.className = 'bad';
+    el.innerHTML = `${name}  <span class="mono">${v}</span><br>${note}`;
+    el.addEventListener('mouseenter', () => rows.forEach((g) => { g.style.opacity = +g.dataset.m === m ? 1 : 0.15; }));
+    el.addEventListener('mouseleave', update);
+    box.append(el);
+  }
+})();
+</script>
+</body>
+</html>

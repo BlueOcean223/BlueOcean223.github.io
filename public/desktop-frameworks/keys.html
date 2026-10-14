@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>按键在 GPUI 里的路径（模拟）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--font-mono); font-size: .92em; }
+.ctrls { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin-bottom: 14px; }
+.seg { display: inline-flex; background: var(--bg-soft); border-radius: 999px; padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 999px; font: 500 12.5px var(--font-sans); color: var(--muted); cursor: pointer; }
+.seg button.on { background: #fff; color: var(--text); box-shadow: 0 1px 3px rgba(20,20,19,.12); }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 3px 10px; font: 500 12.5px var(--font-sans); cursor: pointer; }
+.btn:hover { background: var(--bg-soft); }
+.wrap { display: grid; grid-template-columns: 250px 1fr; gap: 20px; align-items: start; }
+@media (max-width: 640px) { .wrap { grid-template-columns: 1fr; } }
+.pick { border-radius: 10px; background: #fff; box-shadow: 0 8px 22px rgba(20,20,19,.16), 0 0 0 .5px rgba(20,20,19,.15); padding: 8px; }
+.pick input { width: 100%; border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 8px; font: 13px var(--font-sans); outline: none; }
+.pick input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217,119,87,.18); }
+.pick .o { padding: 6px 8px; border-radius: 6px; font-size: 13px; color: var(--text-soft); }
+.pick .o.on { background: var(--bg-soft); color: var(--text); }
+.pick .closed { padding: 18px 8px; text-align: center; color: var(--muted); font-size: 13px; }
+.keys { display: flex; gap: 6px; margin-top: 10px; }
+.diag { font-size: 12.5px; }
+.int { border: 1.5px solid #e0b49f; background: #fbefe9; color: var(--accent-hover); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; transition: opacity .3s, box-shadow .2s; }
+.box { border: 1.5px solid var(--border-strong); border-radius: 8px; padding: 22px 8px 8px; position: relative; transition: box-shadow .2s, border-color .2s, background .2s; }
+.box > .n { position: absolute; top: 3px; left: 9px; color: var(--muted); }
+.box.input { background: var(--bg-soft); padding: 8px 10px; }
+.box.input > .n { position: static; }
+.hit { box-shadow: 0 0 0 3px rgba(217,119,87,.55) !important; border-color: var(--accent) !important; }
+.miss { border-style: dashed !important; background: #f5f3ee !important; }
+.log { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; min-height: 92px; }
+.log div { font-size: 12.5px; color: var(--text-soft); padding: 4px 8px; border-radius: 6px; background: var(--bg-soft); animation: pop .3s ease; }
+@keyframes pop { from { opacity: 0; transform: translateY(-4px); } }
+.cap { margin-top: 10px; color: var(--muted); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { * { transition-duration: .01ms !important; animation-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+<div class="ctrls">
+  <div class="seg" id="seg"><button data-v="none" class="on">不拦截</button><button data-v="intercept">intercept_keystrokes</button></div>
+</div>
+<div class="wrap">
+  <div>
+    <div class="pick" id="pick"></div>
+    <div class="keys"><button class="btn" data-k="ArrowUp">↑</button><button class="btn" data-k="ArrowDown">↓</button><button class="btn" data-k="Enter">回车</button><button class="btn" data-k="Escape">Esc</button></div>
+  </div>
+  <div>
+    <div class="diag">
+      <div class="int" id="int">cx.intercept_keystrokes：在所有绑定之前运行</div>
+      <div class="box"><span class="n">Window</span>
+        <div class="box" id="picker"><span class="n">Picker：自己处理 ↑ ↓ 回车 Esc</span>
+          <div class="box input" id="input"><span class="n">Input（焦点在这里）：绑了 up、down、enter、escape</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="log" id="log"></div>
+  </div>
+</div>
+<div class="cap">在过滤框里打字、按方向键、回车、Esc，或者点下面的按钮。右边的分发路径是照着 GPUI 的规则模拟的。</div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const pickBox = $('#pick'), logBox = $('#log'), intBox = $('#int'), pickerBox = $('#picker'), inputBox = $('#input');
+  const OPTS = ['Anthropic', 'Kimi For Coding', 'Z.AI GLM Coding Plan', 'OpenRouter', 'MiniMax'];
+  const NAMES = { ArrowUp: '↑', ArrowDown: '↓', Enter: '回车', Escape: 'Esc' };
+  let mode = 'none', hi = 1, filter = '', isOpen = true, input = null;
+  const visible = () => OPTS.filter((o) => o.toLowerCase().includes(filter.toLowerCase()));
+
+  function build() {
+    pickBox.innerHTML = '';
+    if (!isOpen) {
+      pickBox.innerHTML = '<div class="closed">选择器已关闭<br><button class="btn" style="margin-top:8px">重新打开</button></div>';
+      pickBox.querySelector('button').addEventListener('click', () => { isOpen = true; build(); input.focus(); });
+      input = null;
+      return;
+    }
+    input = document.createElement('input');
+    input.placeholder = '过滤…';
+    input.value = filter;
+    input.setAttribute('aria-label', '过滤供应商');
+    input.addEventListener('keydown', (e) => {
+      if (NAMES[e.key] && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); key(e.key); }
+    });
+    input.addEventListener('input', () => {
+      filter = input.value;
+      hi = 0;
+      list();
+      log('打字：拦截器不管普通字符，照常进了过滤框');
+    });
+    const l = document.createElement('div');
+    l.id = 'list';
+    pickBox.append(input, l);
+    list();
+  }
+  function list() {
+    const l = $('#list');
+    if (!l) return;
+    const v = visible();
+    if (hi >= v.length) hi = Math.max(0, v.length - 1);
+    l.innerHTML = v.length ? v.map((o, i) => `<div class="o${i === hi ? ' on' : ''}">${o}</div>`).join('') : '<div class="o" style="color:var(--faint)">没有匹配的</div>';
+  }
+  function log(html) {
+    const d = document.createElement('div');
+    d.innerHTML = html;
+    logBox.prepend(d);
+    while (logBox.children.length > 4) logBox.lastChild.remove();
+  }
+  function flash(el, cls) {
+    el.classList.remove('hit', 'miss');
+    void el.offsetWidth;
+    el.classList.add(cls);
+    setTimeout(() => el.classList.remove(cls), 700);
+  }
+  function key(k) {
+    if (!isOpen) return;
+    const n = NAMES[k];
+    if (mode === 'none') {
+      flash(inputBox, 'hit');
+      flash(pickerBox, 'miss');
+      log(`${n}：Input 离焦点最近，键在它那里就被处理掉了，Picker 没收到`);
+      return;
+    }
+    flash(intBox, 'hit');
+    setTimeout(() => flash(pickerBox, 'hit'), 120);
+    const v = visible();
+    let extra = '';
+    if (k === 'ArrowUp') hi = Math.max(0, hi - 1);
+    if (k === 'ArrowDown') hi = Math.min(v.length - 1, hi + 1);
+    if (k === 'Enter' && v[hi]) extra = `，选中了 ${v[hi]}`;
+    if (k === 'Escape') { isOpen = false; extra = '，关掉了选择器'; }
+    log(`${n}：拦截器先拿到，Picker 处理了${extra}，<span class="mono">stop_propagation()</span>`);
+    if (k === 'Escape') build(); else list();
+  }
+  document.querySelectorAll('[data-k]').forEach((b) => b.addEventListener('click', () => {
+    key(b.dataset.k);
+    if (input) input.focus();
+  }));
+  document.querySelectorAll('#seg button').forEach((b) => b.addEventListener('click', () => {
+    mode = b.dataset.v;
+    document.querySelectorAll('#seg button').forEach((x) => x.classList.toggle('on', x === b));
+    intBox.style.opacity = mode === 'intercept' ? 1 : 0.25;
+    log(mode === 'intercept' ? '注册了拦截器：只管这个窗口里、没按修饰键的 ↑ ↓ 回车 Esc' : '去掉了拦截器');
+  }));
+  intBox.style.opacity = 0.25;
+  build();
+  log('点进过滤框，按 ↓ 试试。');
+})();
+</script>
+</body>
+</html>

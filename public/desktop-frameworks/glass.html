@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>面板的毛玻璃和选择器的半透明</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+.ctrls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 14px; }
+.lab { color: var(--muted); font-size: 12.5px; }
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--bg-soft); border-radius: 999px; padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 999px; font: 500 12.5px var(--font-sans); color: var(--muted); cursor: pointer; }
+.seg button.on { background: #fff; color: var(--text); box-shadow: 0 1px 3px rgba(20,20,19,.12); }
+
+.desk { position: relative; height: 300px; border-radius: 10px; overflow: hidden;
+  background:
+    radial-gradient(circle at 20% 70%, #e59a76 0 14%, transparent 14.5%),
+    radial-gradient(circle at 72% 62%, #6f9fd0 0 17%, transparent 17.5%),
+    radial-gradient(circle at 86% 20%, #9cb36e 0 11%, transparent 11.5%),
+    radial-gradient(circle at 38% 18%, #f0c36d 0 9%, transparent 9.5%),
+    linear-gradient(135deg, #f5dcc7 0%, #d9e2ee 60%, #cbd9c0 100%); }
+.desk::before { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(115deg, rgba(255,255,255,.22) 0 14px, transparent 14px 28px); }
+/* 外层：系统的 NSVisualEffectView，铺满整个矩形窗口 */
+.vev { position: absolute; top: 24px; left: 50%; width: min(300px, calc(100% - 28px)); height: 252px; transform: translateX(-50%); -webkit-backdrop-filter: blur(16px) saturate(1.5); backdrop-filter: blur(16px) saturate(1.5); background: rgba(255,255,255,.34); box-shadow: 0 16px 38px rgba(20,20,19,.28); transition: border-radius .4s; }
+.vev.round { border-radius: 12px; overflow: hidden; }
+/* 里层：GPUI 画的 12 像素圆角内容 */
+.gp { position: absolute; inset: 0; border-radius: 12px; background: rgba(250,249,245,.8); font-size: 12px; overflow: hidden; }
+.head { height: 36px; display: flex; align-items: center; padding: 0 12px; font-weight: 600; border-bottom: 1px solid rgba(20,20,19,.08); }
+.row { height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; }
+.row b { font-weight: 500; font-size: 13px; }
+.row span { color: var(--text-soft); }
+.picker { position: absolute; top: 58px; left: 26px; right: 26px; height: 160px; border-radius: 10px; box-shadow: 0 10px 26px rgba(20,20,19,.25), 0 0 0 .5px rgba(20,20,19,.2); padding: 8px; transition: background .3s; }
+.picker .o { padding: 5px 8px; border-radius: 6px; font-size: 12px; color: var(--text); }
+.picker .o.on { background: rgba(20,20,19,.07); }
+.hint { position: absolute; width: 34px; height: 34px; border: 2px dashed var(--accent-hover); border-radius: 50%; transition: opacity .4s; pointer-events: none; }
+/* 固定高度：iframe 的自动高度只增不减，切换时代码行数变少会在底下留白。 */
+pre { min-height: 176px; margin: 12px 0 0; background: #f4f2ec; border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font: 12px/1.6 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
+.cap { margin-top: 10px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="ctrls">
+  <span class="lab">窗口四角</span>
+  <div class="seg" id="corner"><button data-v="raw" class="on">GPUI 默认</button><button data-v="round">mac::round_corners</button></div>
+  <span class="lab">选择器</span>
+  <div class="seg" id="pick"><button data-v="magpie" class="on">magpie</button><button data-v="v1">confdeck 第一版</button><button data-v="now">confdeck 现在</button></div>
+</div>
+<div class="desk" id="desk">
+  <div class="vev" id="vev"><div class="gp" id="gp"></div></div>
+</div>
+<pre id="code"></pre>
+<div class="cap">毛玻璃和模糊都是你的浏览器用 backdrop-filter 实时画的。虚线圈出的是露在圆角外面的直角。</div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const desk = $('#desk'), vev = $('#vev'), gp = $('#gp'), code = $('#code');
+  const ROWS = [['Claude Code', 'Kimi For Coding'], ['Codex', 'OpenRouter'], ['OpenCode', 'Z.AI GLM Coding Plan'], ['Pi', 'Kimi、OpenRouter、MiniMax'], ['Grok Build', 'xAI']];
+  const OPTS = ['Anthropic', 'Kimi For Coding', 'Z.AI GLM Coding Plan', 'OpenRouter', 'MiniMax'];
+  gp.innerHTML = '<div class="head">confdeck</div>' + ROWS.map(([a, b]) => `<div class="row"><b>${a}</b><span>${b}</span></div>`).join('');
+  const picker = document.createElement('div');
+  picker.className = 'picker';
+  picker.innerHTML = OPTS.map((o, i) => `<div class="o${i === 1 ? ' on' : ''}">${o}</div>`).join('');
+  gp.append(picker);
+  const hints = [[0, 0], [1, 0], [0, 1], [1, 1]].map(([a, b]) => {
+    const e = document.createElement('div');
+    e.className = 'hint';
+    desk.append(e);
+    return [e, a, b];
+  });
+  let corner = 'raw', pick = 'magpie';
+  function placeHints() {
+    const r = vev.getBoundingClientRect(), d = desk.getBoundingClientRect();
+    for (const [e, a, b] of hints) {
+      e.style.left = r.left - d.left + a * r.width - 17 + 'px';
+      e.style.top = r.top - d.top + b * r.height - 17 + 'px';
+      e.style.opacity = corner === 'round' ? 0 : 1;
+    }
+  }
+  function render() {
+    vev.classList.toggle('round', corner === 'round');
+    const alpha = pick === 'now' ? 1 : 0.94;
+    const blur = pick === 'magpie' ? 'blur(24px)' : 'none';
+    picker.style.background = `rgba(250,249,245,${alpha})`;
+    picker.style.backdropFilter = blur;
+    picker.style.webkitBackdropFilter = blur;
+    const cornerCode = corner === 'round'
+      ? '// mac.rs：绕过 GPUI，直接设 content view 的 layer\nlet _: () = msg_send![layer, setCornerRadius: radius];\nlet _: () = msg_send![layer, setMasksToBounds: true];'
+      : '// 窗口背景 Blurred，GPUI 垫一层铺满矩形窗口的 NSVisualEffectView\nwindow_background: WindowBackgroundAppearance::Blurred,';
+    const pickCode = pick === 'magpie'
+      ? '/* magpie：网页，模糊交给浏览器 */\nbackground: var(--pop-bg);\n-webkit-backdrop-filter: blur(24px);\nbackdrop-filter: blur(24px);'
+      : pick === 'v1'
+        ? '// confdeck 第一版：照抄颜色，94% 不透明，没有模糊\n.bg(t.pop_bg)'
+        : '// confdeck 现在：完全不透明\n.bg(Hsla { a: 1., ..t.pop_bg })';
+    code.textContent = cornerCode + '\n\n' + pickCode;
+    placeHints();
+  }
+  function bind(id, set) {
+    document.querySelectorAll(`#${id} button`).forEach((b) => b.addEventListener('click', () => {
+      document.querySelectorAll(`#${id} button`).forEach((x) => x.classList.toggle('on', x === b));
+      set(b.dataset.v);
+      render();
+    }));
+  }
+  bind('corner', (v) => { corner = v; });
+  bind('pick', (v) => { pick = v; });
+  addEventListener('resize', placeHints);
+  render();
+})();
+</script>
+</body>
+</html>

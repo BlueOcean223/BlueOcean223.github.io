@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>打开选择器时的几帧</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+.ctrls { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin-bottom: 14px; }
+.seg { display: inline-flex; background: var(--bg-soft); border-radius: 999px; padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 999px; font: 500 12.5px var(--font-sans); color: var(--muted); cursor: pointer; }
+.seg button.on { background: #fff; color: var(--text); box-shadow: 0 1px 3px rgba(20,20,19,.12); }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 14px; font: 500 12.5px var(--font-sans); cursor: pointer; }
+.btn:hover { background: var(--bg-soft); }
+.btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+.btn:disabled { opacity: .45; cursor: default; }
+
+.view { position: relative; height: 330px; border-radius: 10px; background: #2b2a27; overflow: hidden; }
+.view .lab { position: absolute; left: 12px; top: 10px; color: #c9c5ba; font-size: 12px; z-index: 3; }
+.fwin { position: absolute; top: 14px; left: 50%; margin-left: -125px; width: 250px; border-radius: 12px; background: #f7f5ef; overflow: hidden; box-shadow: 0 14px 34px rgba(0,0,0,.35); font-size: 12px; }
+.inner { position: absolute; left: 0; right: 0; top: 0; transform-origin: top; }
+.head { height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-weight: 600; border-bottom: 1px solid rgba(20,20,19,.08); }
+.row { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; }
+.ava { width: 18px; height: 18px; border-radius: 5px; flex: none; }
+.name { flex: 1; color: var(--text-soft); }
+.pill { border: 1px solid rgba(20,20,19,.14); background: #fff; border-radius: 999px; padding: 1px 10px; font-size: 11px; white-space: nowrap; }
+.picker { position: absolute; left: 10px; right: 10px; border-radius: 10px; background: #fff; box-shadow: 0 8px 22px rgba(20,20,19,.22), 0 0 0 .5px rgba(20,20,19,.15); padding: 6px; z-index: 2; }
+.picker .f { border: 1px solid var(--border-strong); border-radius: 6px; padding: 3px 8px; font-size: 11px; color: var(--faint); margin-bottom: 4px; }
+.picker .o { padding: 5px 8px; border-radius: 6px; font-size: 11.5px; color: var(--text-soft); }
+.picker .o.on { background: var(--bg-soft); color: var(--text); }
+
+.strip { display: flex; gap: 8px; margin-top: 12px; overflow-x: auto; padding: 3px 3px 4px; }
+.thumb { flex: none; width: 100px; height: 132px; border-radius: 6px; background: #2b2a27; position: relative; overflow: hidden; cursor: pointer; outline: 2px solid transparent; outline-offset: 2px; transition: outline-color .2s; }
+.thumb.on { outline-color: var(--accent); }
+.thumb .tv { position: absolute; left: 0; top: 0; width: 250px; height: 330px; transform: scale(.4); transform-origin: 0 0; }
+.thumb .tn { position: absolute; left: 6px; bottom: 4px; color: #e8e4d8; font: 11px var(--font-mono); z-index: 3; }
+.thumb.bad::after { content: ''; position: absolute; right: 6px; top: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); z-index: 3; }
+.desc { margin-top: 10px; min-height: 3.2em; color: var(--text-soft); font-size: 13px; }
+.desc code { font-family: var(--font-mono); font-size: .92em; }
+</style>
+</head>
+<body>
+<div class="ctrls">
+  <div class="seg" id="seg"><button data-v="before" class="on">修之前</button><button data-v="after">修之后</button></div>
+  <button class="btn primary" id="play">按 57 帧每秒播放</button>
+  <button class="btn" id="slow">放慢 10 倍</button>
+</div>
+<div class="view" id="view"><div class="lab" id="lab"></div></div>
+<div class="strip" id="strip"></div>
+<div class="desc" id="desc"></div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const view = $('#view'), lab = $('#lab'), strip = $('#strip'), desc = $('#desc');
+  const SHORT = 164, TALL = 300;
+  const ROWS = [['Claude Code', 'Kimi For Coding', '#d97757'], ['Codex', 'OpenRouter', '#6a9bcc'], ['Pi', '3 家', '#788c5d']];
+  const OPTS = ['Anthropic', 'Kimi For Coding', 'Z.AI GLM Coding Plan', 'OpenRouter', 'MiniMax'];
+  const K = {
+    closed: { h: SHORT, bad: false, d: '点击之前，面板是矮的。' },
+    flip: { h: SHORT, bad: true, d: '窗口还没变高。<code>anchored()</code> 发现下面放不下，把选择器翻到上面，盖住了标题。' },
+    stretch: { h: TALL, bad: true, d: '窗口已经变高，里面还是上一帧的旧画面，被系统拉伸着铺满新尺寸。' },
+    open: { h: TALL, bad: false, d: '正确的画面：选择器在那一行下面。' },
+    wait: { h: SHORT, bad: false, d: '窗口还矮，选择器这一帧先不画。' },
+    sync: { h: TALL, bad: false, d: '<code>setFrame</code> 之后马上让 GPUI 同步画一帧，新画面和新尺寸一起提交。' },
+  };
+  const SEQ = { before: ['closed', 'flip', 'flip', 'stretch', 'open', 'open'], after: ['closed', 'wait', 'sync', 'open'] };
+  let mode = 'before', idx = 0, playing = false;
+
+  function panel(pickerTop) {
+    let html = '<div class="head">confdeck<span style="font-weight:400;color:var(--faint)">⋯</span></div>';
+    for (const [n, p, c] of ROWS) html += `<div class="row"><span class="ava" style="background:${c}"></span><span class="name">${n}</span><span class="pill">${p} ▾</span></div>`;
+    if (pickerTop != null) {
+      html += `<div class="picker" style="top:${pickerTop}px"><div class="f">过滤…</div>`;
+      OPTS.forEach((o, i) => { html += `<div class="o${i === 1 ? ' on' : ''}">${o}</div>`; });
+      html += '</div>';
+    }
+    return html;
+  }
+  function frame(kind) {
+    const w = document.createElement('div');
+    w.className = 'fwin';
+    w.style.height = K[kind].h + 'px';
+    const inner = document.createElement('div');
+    inner.className = 'inner';
+    inner.style.height = (kind === 'stretch' ? SHORT : K[kind].h) + 'px';
+    const pickerTop = kind === 'flip' ? 0 : kind === 'open' || kind === 'sync' ? 76 : null;
+    inner.innerHTML = panel(pickerTop);
+    if (kind === 'stretch') inner.style.transform = `scaleY(${TALL / SHORT})`;
+    w.append(inner);
+    return w;
+  }
+  function show(i) {
+    idx = i;
+    const seq = SEQ[mode], kind = seq[i];
+    view.querySelectorAll('.fwin').forEach((e) => e.remove());
+    view.append(frame(kind));
+    lab.textContent = `第 ${i + 1} / ${seq.length} 帧`;
+    desc.innerHTML = K[kind].d;
+    strip.querySelectorAll('.thumb').forEach((t, j) => t.classList.toggle('on', j === i));
+  }
+  function buildStrip() {
+    strip.innerHTML = '';
+    SEQ[mode].forEach((kind, i) => {
+      const t = document.createElement('div');
+      t.className = 'thumb' + (K[kind].bad ? ' bad' : '');
+      const tv = document.createElement('div');
+      tv.className = 'tv';
+      tv.append(frame(kind));
+      t.append(tv);
+      t.insertAdjacentHTML('beforeend', `<div class="tn">#${i + 1}</div>`);
+      t.addEventListener('click', () => { if (!playing) show(i); });
+      strip.append(t);
+    });
+  }
+  async function play(perFrame) {
+    if (playing) return;
+    playing = true;
+    $('#play').disabled = $('#slow').disabled = true;
+    show(0);
+    await sleep(500);
+    for (let i = 1; i < SEQ[mode].length; i++) {
+      await sleep(RM ? 0 : perFrame);
+      show(i);
+    }
+    playing = false;
+    $('#play').disabled = $('#slow').disabled = false;
+  }
+  $('#play').addEventListener('click', () => play(1000 / 57));
+  $('#slow').addEventListener('click', () => play(175));
+  document.querySelectorAll('#seg button').forEach((b) => b.addEventListener('click', () => {
+    if (playing) return;
+    mode = b.dataset.v;
+    document.querySelectorAll('#seg button').forEach((x) => x.classList.toggle('on', x === b));
+    buildStrip();
+    show(0);
+  }));
+  buildStrip();
+  show(0);
+})();
+</script>
+</body>
+</html>

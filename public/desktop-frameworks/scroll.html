@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WebKit 少算的滚动范围（模拟）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+code, .mono { font-family: var(--font-mono); font-size: .9em; }
+.ctrls { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin-bottom: 14px; }
+.seg { display: inline-flex; flex-wrap: wrap; background: var(--bg-soft); border-radius: 999px; padding: 3px; gap: 2px; }
+.seg button { border: 0; background: transparent; padding: 4px 12px; border-radius: 999px; font: 500 12.5px var(--font-sans); color: var(--muted); cursor: pointer; }
+.seg button.on { background: #fff; color: var(--text); box-shadow: 0 1px 3px rgba(20,20,19,.12); }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 14px; font: 500 12.5px var(--font-sans); cursor: pointer; }
+.btn:hover { background: var(--bg-soft); }
+.wrap { display: grid; grid-template-columns: 1fr 250px; gap: 16px; }
+@media (max-width: 640px) { .wrap { grid-template-columns: 1fr; } }
+/* clientHeight 240，内容 825，可滚范围正好是 issue 里的 585。 */
+.box { height: 242px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); overscroll-behavior: contain; }
+.inner { height: 825px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.blk { height: 84px; flex: none; border-radius: 6px; padding: 8px 10px; font-size: 12.5px; color: var(--text-soft); background: #fff; border: 1px solid var(--border); }
+.blk.cq { border-style: dashed; border-color: #e0b49f; }
+.blk .mono { color: var(--accent-hover); font-size: 11.5px; }
+.foot { margin-top: auto; text-align: center; padding: 10px; border-radius: 6px; background: var(--text); color: var(--bg); font-size: 12.5px; }
+.side { display: flex; flex-direction: column; gap: 10px; }
+.chk { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-soft); cursor: pointer; user-select: none; }
+.chk input { accent-color: var(--accent); }
+.chk input:disabled + span { opacity: .45; }
+.meter { height: 8px; background: var(--bg-soft); border-radius: 999px; position: relative; overflow: hidden; }
+.meter i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 999px; }
+.meter b { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); }
+.read { font-family: var(--font-mono); font-size: 12px; color: var(--text-soft); background: var(--bg-soft); border-radius: 6px; padding: 6px 10px; }
+.cap { margin-top: 10px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="ctrls">
+  <div class="seg" id="seg"><button data-v="webkit" class="on">WebKit</button><button data-v="chromium">Chromium（WebView2）</button></div>
+</div>
+<div class="wrap">
+  <div class="box" id="box"><div class="inner" id="inner"></div></div>
+  <div class="side">
+    <label class="chk"><input type="checkbox" id="rt"><span>把 <code>#rt</code> 换成克隆</span></label>
+    <label class="chk"><input type="checkbox" id="more"><span>把 <code>#rtMore</code> 换成克隆</span></label>
+    <button class="btn" id="set">el.scrollTop = 99999</button>
+    <div class="meter" id="meter"><i></i><b></b></div>
+    <div class="read" id="read"></div>
+  </div>
+</div>
+<div class="cap">按 magpie #1249 里的数字做的模拟。“少算”是脚本夹住 scrollTop 做出来的，你的浏览器不一定有这个 bug。</div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, RM ? 0 : ms));
+  const box = $('#box'), inner = $('#inner'), read = $('#read'), meter = $('#meter');
+  const rt = $('#rt'), more = $('#more');
+  const MAX = 585;
+  const BLOCKS = [
+    ['Routing', ''],
+    ['路由表 #rt', '.rt { container-type: inline-size }'],
+    ['历史记录', ''],
+    ['更多 #rtMore', '.rt-more { container-type: inline-size }'],
+    ['Agent 列表', ''],
+    ['用量', ''],
+    ['设置', ''],
+  ];
+  for (const [title, cq] of BLOCKS) {
+    const el = document.createElement('div');
+    el.className = 'blk' + (cq ? ' cq' : '');
+    el.innerHTML = title + (cq ? `<br><span class="mono">${cq}</span>` : '');
+    inner.append(el);
+  }
+  inner.insertAdjacentHTML('beforeend', '<div class="foot">页脚：滚到这里才算到底</div>');
+
+  let mode = 'webkit', settling = false, note = '', noteAt = 0;
+  // 换掉 #rt 剩 115，换掉 #rtMore 剩 126，两个都换才是 0。
+  const gap = () => (mode === 'webkit' ? (rt.checked ? 0 : 126) + (more.checked ? 0 : 115) : 0);
+  const limit = () => MAX - gap();
+  function render() {
+    const st = Math.round(box.scrollTop);
+    meter.querySelector('i').style.width = (st / MAX) * 100 + '%';
+    meter.querySelector('b').style.left = (limit() / MAX) * 100 + '%';
+    const tail = mode === 'webkit' ? `WebKit 只让到 ${limit()}（少 ${gap()}）` : 'Chromium 能滚到底';
+    read.innerHTML = `scrollTop = ${st}<br>可滚范围 ${MAX}，${tail}${note ? '<br>' + note : ''}`;
+  }
+  box.addEventListener('scroll', () => {
+    if (settling) return;
+    if (box.scrollTop > limit() + 0.5) box.scrollTop = limit();
+    if (note && Math.abs(box.scrollTop - noteAt) > 1) note = '';
+    render();
+  }, { passive: true });
+  for (const c of [rt, more]) c.addEventListener('change', () => {
+    note = '';
+    if (box.scrollTop > limit()) box.scrollTop = limit();
+    render();
+  });
+  $('#set').addEventListener('click', async () => {
+    if (settling) return;
+    settling = true;
+    box.scrollTop = 99999;
+    note = '读回来是 ' + Math.round(box.scrollTop);
+    noteAt = box.scrollTop;
+    render();
+    if (gap() > 0) {
+      await sleep(700);
+      const from = box.scrollTop, to = limit(), t0 = performance.now();
+      note = `读回来是 ${Math.round(from)}，过一会儿又落回 ${to}`;
+      noteAt = to;
+      await new Promise((done) => {
+        const step = (t) => {
+          const k = RM ? 1 : Math.min(1, (t - t0) / 500);
+          box.scrollTop = from + (to - from) * k;
+          render();
+          if (k < 1) requestAnimationFrame(step); else done();
+        };
+        requestAnimationFrame(step);
+      });
+    }
+    setTimeout(() => { settling = false; }, 100);
+  });
+  document.querySelectorAll('#seg button').forEach((b) => b.addEventListener('click', () => {
+    mode = b.dataset.v;
+    note = '';
+    document.querySelectorAll('#seg button').forEach((x) => x.classList.toggle('on', x === b));
+    rt.disabled = more.disabled = mode !== 'webkit';
+    if (box.scrollTop > limit()) box.scrollTop = limit();
+    render();
+  }));
+  render();
+})();
+</script>
+</body>
+</html>

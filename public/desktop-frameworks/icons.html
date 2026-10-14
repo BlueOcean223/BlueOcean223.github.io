@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>同一个 SVG 的两种光栅化</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59;
+  --border: #e8e6dc;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
+.cell { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg); text-align: center; }
+canvas.big { width: 176px; height: 176px; image-rendering: pixelated; border-radius: 6px; background: repeating-conic-gradient(#f0eee6 0 25%, #fff 0 50%) 0 0 / 16px 16px; }
+.t { font-size: 13px; color: var(--text-soft); margin-top: 8px; line-height: 1.5; }
+.act { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+.act canvas { width: 22px; height: 22px; }
+.cap { margin-top: 10px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="cell">
+    <canvas class="big" id="a" width="44" height="44"></canvas>
+    <div class="t">img() 的做法：按固有尺寸 12 像素，出一张 24 像素的位图，再拉到 44 像素</div>
+    <div class="act">实际大小 <canvas id="a2" width="44" height="44"></canvas></div>
+  </div>
+  <div class="cell">
+    <canvas class="big" id="b" width="44" height="44"></canvas>
+    <div class="t">confdeck 的做法：22 点乘 2 倍缩放，直接出 44 像素的位图</div>
+    <div class="act">实际大小 <canvas id="b2" width="44" height="44"></canvas></div>
+  </div>
+</div>
+<div class="cap">两张都是你的浏览器用同一个 SVG 现场光栅化的。上面是 44 像素的位图放大 4 倍、不做插值的样子。图标是为这张图画的，不是 LobeHub 的原图。</div>
+<script>
+(() => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d97757"/><stop offset="1" stop-color="#6a9bcc"/></linearGradient></defs><rect x="1.5" y="1.5" width="21" height="21" rx="6" fill="url(#g)"/><path d="M7 16 12 6.5 17 16Z" fill="#fff"/><circle cx="12" cy="18.6" r="1.4" fill="#fff"/><path d="M4.5 9.5h3" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/></svg>';
+  const img = new Image();
+  img.onload = () => {
+    const small = document.createElement('canvas');
+    small.width = small.height = 24;
+    small.getContext('2d').drawImage(img, 0, 0, 24, 24);
+    const upscaled = (id) => {
+      const c = document.getElementById(id).getContext('2d');
+      c.imageSmoothingEnabled = true;
+      c.imageSmoothingQuality = 'high';
+      c.drawImage(small, 0, 0, 44, 44);
+    };
+    const native = (id) => document.getElementById(id).getContext('2d').drawImage(img, 0, 0, 44, 44);
+    upscaled('a'); upscaled('a2'); native('b'); native('b2');
+  };
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+})();
+</script>
+</body>
+</html>

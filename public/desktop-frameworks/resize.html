@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>三种改窗口高度的方法</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+.mono { font-family: var(--font-mono); font-size: .92em; }
+.ctrls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 14px; font: 500 12.5px var(--font-sans); cursor: pointer; transition: background .2s, border-color .2s; }
+.btn:hover { background: var(--bg-soft); }
+.btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.two { display: grid; grid-template-columns: 1fr 260px; gap: 16px; align-items: start; }
+@media (max-width: 640px) { .two { grid-template-columns: 1fr; } }
+
+.desk { position: relative; height: 360px; border-radius: 10px; overflow: hidden; user-select: none;
+  background:
+    radial-gradient(circle at 18% 72%, #e59a76 0 13%, transparent 13.5%),
+    radial-gradient(circle at 74% 64%, #6f9fd0 0 16%, transparent 16.5%),
+    radial-gradient(circle at 88% 22%, #9cb36e 0 10%, transparent 10.5%),
+    radial-gradient(circle at 40% 18%, #f0c36d 0 8%, transparent 8.5%),
+    linear-gradient(135deg, #f5dcc7 0%, #d9e2ee 60%, #cbd9c0 100%); }
+.menubar { position: absolute; top: 0; left: 0; right: 0; height: 24px; background: rgba(250,249,245,.7); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-size: 12px; color: #222; z-index: 6; }
+.menubar .mr { display: flex; gap: 12px; align-items: center; }
+.tray { width: 22px; height: 18px; border-radius: 4px; display: grid; place-items: center; background: rgba(20,20,19,.12); }
+.win { position: absolute; right: 18px; width: 250px; border-radius: 12px; background: rgba(250,249,245,.94); box-shadow: 0 14px 34px rgba(20,20,19,.25), 0 0 0 .5px rgba(20,20,19,.18); overflow: hidden; z-index: 7; transition: top .7s cubic-bezier(.65,0,.25,1), height .7s cubic-bezier(.65,0,.25,1); font-size: 12px; }
+.layout { position: absolute; left: 0; right: 0; top: 0; }
+.void { position: absolute; left: 0; right: 0; bottom: 0; background: repeating-linear-gradient(135deg, #f3e1d8 0 8px, #fbefe9 8px 16px); display: flex; align-items: center; justify-content: center; color: var(--accent-hover); font-size: 11px; opacity: 0; transition: opacity .4s; text-align: center; padding: 0 16px; }
+.ghost { position: absolute; right: 18px; width: 250px; border: 1.5px dashed rgba(193,95,63,.8); border-radius: 12px; z-index: 8; pointer-events: none; transition: opacity .3s; }
+.axes { position: absolute; left: 14px; bottom: 12px; font-size: 11px; color: rgba(20,20,19,.65); }
+.axes svg { display: block; }
+.head { height: 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; font-weight: 600; border-bottom: 1px solid rgba(20,20,19,.08); }
+.row { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 12px; }
+.ava { width: 18px; height: 18px; border-radius: 5px; flex: none; }
+.name { flex: 1; color: var(--text-soft); }
+.pill { border: 1px solid rgba(20,20,19,.14); background: #fff; border-radius: 999px; padding: 1px 10px; font-size: 11px; white-space: nowrap; }
+.picker { position: absolute; left: 10px; right: 10px; border-radius: 10px; background: #fff; box-shadow: 0 8px 22px rgba(20,20,19,.22), 0 0 0 .5px rgba(20,20,19,.15); padding: 6px; z-index: 2; }
+.picker .f { border: 1px solid var(--border-strong); border-radius: 6px; padding: 3px 8px; font-size: 11px; color: var(--faint); margin-bottom: 4px; }
+.picker .o { padding: 5px 8px; border-radius: 6px; font-size: 11.5px; color: var(--text-soft); }
+.picker .o.on { background: var(--bg-soft); color: var(--text); }
+
+.log { list-style: none; padding: 0; margin: 0; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
+.log li { padding: 6px 10px; border-radius: 6px; background: var(--bg-soft); color: var(--text-soft); opacity: 0; transform: translateX(8px); transition: opacity .3s, transform .3s; }
+.log li.show { opacity: 1; transform: none; }
+.log li.bad { background: #fbefe9; color: var(--accent-hover); }
+.log li.good { background: #eef3e8; color: #4f6339; }
+@media (prefers-reduced-motion: reduce) { * { transition-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+<div class="ctrls">
+  <button class="btn" data-m="resize">window.resize()</button>
+  <button class="btn" data-m="sync">setFrame，同步调</button>
+  <button class="btn" data-m="defer">setFrame，挪到下一轮任务</button>
+</div>
+<div class="two">
+  <div class="desk">
+    <div class="menubar"><span>Finder</span><div class="mr"><span>100%</span><div class="tray"><svg viewBox="0 0 18 18" width="15" height="15"><rect x="3" y="2" width="12" height="14" rx="2" fill="none" stroke="#141413" stroke-width="1.6"/><rect x="6" y="5" width="6" height="4" fill="#141413"/><path d="M6 13h2M10 13h2" stroke="#141413" stroke-width="1.6"/></svg></div><span>10:42</span></div></div>
+    <div class="ghost" id="ghost"></div>
+    <div class="win" id="win"><div class="layout" id="layout"></div><div class="void" id="void">窗口这块变高了，GPUI 不知道</div></div>
+    <div class="axes"><svg width="70" height="54" viewBox="0 0 70 54"><path d="M8 48 H62 M8 48 V6" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M8 2 l-4 7 h8z M66 48 l-7 -4 v8z" fill="currentColor"/><circle cx="8" cy="48" r="3" fill="currentColor"/></svg>AppKit 的原点在左下角</div>
+  </div>
+  <ul class="log" id="log"></ul>
+</div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, RM ? 0 : ms));
+  const win = $('#win'), layout = $('#layout'), voidEl = $('#void'), ghost = $('#ghost'), log = $('#log');
+  const TOP = 30, SHORT = 164, TALL = 300;
+  const ROWS = [['Claude Code', 'Kimi For Coding', '#d97757'], ['Codex', 'OpenRouter', '#6a9bcc'], ['Pi', '3 家', '#788c5d']];
+  const OPTS = ['Anthropic', 'Kimi For Coding', 'Z.AI GLM Coding Plan', 'OpenRouter', 'MiniMax'];
+  let busy = false;
+
+  function build(pickerTop) {
+    let html = '<div class="head">confdeck<span style="font-weight:400;color:var(--faint)">⋯</span></div>';
+    for (const [n, p, c] of ROWS) html += `<div class="row"><span class="ava" style="background:${c}"></span><span class="name">${n}</span><span class="pill">${p} ▾</span></div>`;
+    if (pickerTop != null) {
+      html += `<div class="picker" style="top:${pickerTop}px"><div class="f">过滤…</div>`;
+      OPTS.forEach((o, i) => { html += `<div class="o${i === 1 ? ' on' : ''}">${o}</div>`; });
+      html += '</div>';
+    }
+    layout.innerHTML = html;
+  }
+  function state(top, height, layoutHeight, pickerTop, showVoid) {
+    win.style.top = top + 'px';
+    win.style.height = height + 'px';
+    layout.style.height = layoutHeight + 'px';
+    build(pickerTop);
+    voidEl.style.top = layoutHeight + 'px';
+    voidEl.style.opacity = showVoid ? 1 : 0;
+  }
+  async function say(text, cls) {
+    const li = document.createElement('li');
+    li.className = cls || '';
+    li.innerHTML = text;
+    log.append(li);
+    await sleep(30);
+    li.classList.add('show');
+    await sleep(420);
+  }
+  function reset() {
+    state(TOP, SHORT, SHORT, null, false);
+    ghost.style.top = TOP + 'px';
+    ghost.style.height = SHORT + 'px';
+    ghost.style.opacity = 0;
+    log.innerHTML = '<li class="show">点上面的一种改法，打开 Claude Code 那一行的选择器。虚线框是窗口原来的位置。</li>';
+  }
+  async function run(m) {
+    if (busy) return;
+    busy = true;
+    document.querySelectorAll('[data-m]').forEach((b) => b.classList.toggle('on', b.dataset.m === m));
+    reset();
+    log.innerHTML = '';
+    await sleep(250);
+    ghost.style.opacity = 1;
+    if (m === 'resize') {
+      await say('<span class="mono">window.resize()</span> 调的是 <span class="mono">setContentSize:</span>');
+      state(TOP - (TALL - SHORT), TALL, TALL, 76, false);
+      await sleep(500);
+      await say('左下角不动，加高就是往上长');
+      await say('面板的上边冲到了菜单栏上面', 'bad');
+    } else if (m === 'sync') {
+      await say('在点击处理函数里调 <span class="mono">setFrame:display:</span>，顶边不动');
+      win.style.height = TALL + 'px';
+      await sleep(500);
+      await say('AppKit 同步回调 GPUI 的 resize，要借用整个 <span class="mono">App</span>');
+      await say('<span class="mono">App</span> 正被点击事件借着，这次尺寸变化丢了', 'bad');
+      state(TOP, TALL, SHORT, 0, true);
+      await say('GPUI 还按旧高度排版，下半截空白', 'bad');
+    } else {
+      await say('点击处理函数里只记下新高度');
+      await say('下一轮主线程任务里再 <span class="mono">setFrame:display:</span>');
+      win.style.height = TALL + 'px';
+      await sleep(300);
+      state(TOP, TALL, TALL, 76, false);
+      await say('这时没人借着 <span class="mono">App</span>，GPUI 按新高度排版', 'good');
+    }
+    busy = false;
+  }
+  document.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => run(b.dataset.m)));
+  reset();
+})();
+</script>
+</body>
+</html>
