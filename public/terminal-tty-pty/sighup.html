@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>关掉终端窗口以后，程序还在不在</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f; --faint-2: #b0aea5;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; }
+.grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; grid-template-areas: "ha ha ha" "a1 a2 a3" "hb hb hb" "b1 b2 b3"; }
+.rh { font: 600 13px var(--font-sans); color: var(--muted); }
+#hb { margin-top: 8px; }
+/* 中等宽度：两种跑法左右对照，每一行是同一步 */
+@media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-areas: "ha hb" "a1 b1" "a2 b2" "a3 b3"; } #hb { margin-top: 0; } }
+@media (max-width: 480px) { .grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "ha" "a1" "a2" "a3" "hb" "b1" "b2" "b3"; } #hb { margin-top: 8px; } }
+figure { margin: 0; }
+figure svg { width: 100%; display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+figcaption { font-size: 13px; line-height: 1.6; color: var(--text-soft); margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="rh" id="ha" style="grid-area: ha">直接在终端里跑</div>
+  <figure style="grid-area: a1"><svg id="a1" viewBox="0 0 64 36" shape-rendering="crispEdges" role="img" aria-label="Clawd 在终端里运行 backup.sh，进度条在走"></svg>
+    <figcaption>在 Ghostty 里运行 <code>./backup.sh</code>，要跑很久。</figcaption></figure>
+  <figure style="grid-area: a2"><svg id="a2" viewBox="0 0 64 36" shape-rendering="crispEdges" role="img" aria-label="窗口被关掉，SIGHUP 飞向 backup.sh"></svg>
+    <figcaption>关掉窗口。master 一关，shell 收到 SIGHUP，再转发给 backup.sh。</figcaption></figure>
+  <figure style="grid-area: a3"><svg id="a3" viewBox="0 0 64 36" shape-rendering="crispEdges" role="img" aria-label="新窗口里什么都没有，Clawd 哭了"></svg>
+    <figcaption>重新打开终端，backup.sh 已经退出了。</figcaption></figure>
+  <div class="rh" id="hb" style="grid-area: hb">在 tmux 里跑</div>
+  <figure style="grid-area: b1"><svg id="b1" viewBox="0 0 64 36" shape-rendering="crispEdges" role="img" aria-label="Clawd 在 tmux 里运行 backup.sh，它连在 tmux server 上"></svg>
+    <figcaption>先开 tmux，在里面运行同一个脚本。它连着的是 tmux server 手里的 pty。</figcaption></figure>
+  <figure style="grid-area: b2"><svg id="b2" viewBox="0 0 64 36" shape-rendering="crispEdges" role="img" aria-label="窗口关掉了，tmux server 里的 backup.sh 还在跑"></svg>
+    <figcaption>关掉窗口，退出的只有 tmux client。backup.sh 不受影响，接着跑。</figcaption></figure>
+  <figure style="grid-area: b3"><svg id="b3" viewBox="0 0 64 36" shape-rendering="crispEdges" role="img" aria-label="Clawd 运行 tmux attach，看到备份跑完了，高兴地跳起来"></svg>
+    <figcaption>打开新窗口，<code>tmux attach</code>，备份已经跑完了。</figcaption></figure>
+</div>
+
+<script src="clawd.js"></script>
+<script>
+(() => {
+  const { R, T, rects, clawd, every, sprite, typingFrames, TYPE_SEQ, chip, proc } = Clawd;
+  const NS = 'http://www.w3.org/2000/svg';
+  const $ = (id) => document.getElementById(id);
+  const layer = (svg, x = 0, y = 0) => {
+    const g = document.createElementNS(NS, 'g');
+    if (x || y) g.setAttribute('transform', `translate(${x} ${y})`);
+    svg.appendChild(g);
+    return g;
+  };
+  const FS = 2.3;
+  let keys = '';
+  for (let x = 20; x < 31; x += 2) keys += R(x, 27, 1, 1, 'n');
+  // 桌子、键盘、显示器（屏幕是浅灰的桌面）
+  const ROOM = R(0, 34, 64, 1, 'L') + R(17, 29, 32, 1, 'n') + R(17, 30, 32, 1, 'L') + R(19, 31, 2, 3, 'm') + R(45, 31, 2, 3, 'm')
+    + R(23, 3, 24, 21, 'l') + R(23, 3, 24, 1, 'L') + R(24, 4, 22, 18, 'L') + R(32, 24, 6, 5, 'L')
+    + R(19, 27, 13, 2, 'L') + keys;
+  // 终端窗口，s 是缩放（关窗时变小）
+  const win = (lines, opt = {}) => {
+    const s = opt.scale ?? 1;
+    if (s <= 0) return '';
+    const w = Math.round(20 * s), h = Math.round(15 * s), x = 35 - Math.floor(w / 2), y = 13 - Math.floor(h / 2);
+    let out = R(x, y, w, h, 'K') + R(x, y, w, 2, 'k') + R(x + 1, y, 2, 2, 'r');
+    if (s < 1) return out;
+    lines.forEach((t, i) => { out += T(26, 10 + i * 3, t, FS, 's'); });
+    if (opt.bar != null) out += R(26, 12, 18, 1, 'k') + R(26, 12, Math.round(18 * opt.bar), 1, 'G');
+    if (opt.tmux) out += R(25, 18, 20, 2, 'G') + T(26, 19.6, '[0] backup', 1.8, 'K');
+    if (opt.cursor) out += R(opt.cursor[0], opt.cursor[1], FS * 0.6, FS, 's');
+    return out;
+  };
+  const job = (eyes, p, dead) => {
+    let s = proc(49, 21, 'backup.sh', eyes);
+    s += R(51, 29, 10, 1, 'L') + R(51, 29, Math.round(10 * p), 1, dead ? 'r' : 'G');
+    return s;
+  };
+  const server = () => `<rect x="47.5" y="14.5" width="16" height="19" fill="none" stroke="#b0aea5" stroke-width="0.35" stroke-dasharray="1 0.8" shape-rendering="geometricPrecision"/>`
+    + T(55.5, 13.4, 'tmux server', 2.2, 'n', 'text-anchor="middle"');
+  const pointer = (x, y) => R(x, y, 1, 3, 'w') + R(x + 1, y + 1, 1, 1, 'w') + R(x + 2, y + 2, 1, 1, 'w');
+  const blinkSeq = [[0, 26], [2, 1], [0, 3]];
+  const poof = () => R(52, 29, 2, 2, 'L') + R(56, 27, 3, 3, 'L') + R(60, 30, 2, 2, 'L') + R(54, 32, 2, 1, 'L');
+
+  // a1：直接运行，进度在走
+  {
+    const svg = $('a1'); svg.innerHTML = ROOM;
+    const live = layer(svg);
+    sprite(layer(svg, 3, 18), typingFrames(), TYPE_SEQ);
+    every((t) => { const p = 0.3 + (t % 60) / 60 * 0.2; live.innerHTML = win(['$ ./backup.sh'], { bar: p }) + job('open', p); });
+  }
+  // a2：关窗，SIGHUP 传到 backup.sh
+  {
+    const svg = $('a2'); svg.innerHTML = ROOM;
+    const live = layer(svg);
+    sprite(layer(svg, 3, 18), typingFrames(), blinkSeq);
+    every((t) => {
+      const k = t % 44;
+      const scale = k < 8 ? 1 : k < 11 ? 1 - (k - 7) * 0.3 : 0;
+      let s = win(['$ ./backup.sh'], { bar: 0.5, scale });
+      if (k < 8) s += pointer(Math.round(40 - k * 1.6), Math.round(16 - k * 1.3));
+      if (k >= 11 && k < 21) s += chip(38 + (k - 11) * 1.6, 14, 'SIGHUP', 'sig', 2.2);
+      s += job(k >= 21 ? 'wide' : 'open', 0.5, k >= 21);
+      live.innerHTML = s;
+    });
+  }
+  // a3：再打开，已经没了
+  {
+    const svg = $('a3'); svg.innerHTML = ROOM;
+    const live = layer(svg);
+    sprite(layer(svg, 3, 18), [
+      rects(clawd({ face: 'right', eyes: 'sad', tear: true, lookY: 1 })),
+      rects(clawd({ face: 'right', eyes: 'sad', lookY: 1 })),
+    ], [[1, 6], [0, 14]]);
+    every((t) => {
+      live.innerHTML = win(['$'], { cursor: Math.floor(t / 4) % 2 ? null : [27.8, 8.2] }) + poof();
+    });
+  }
+  // b1：在 tmux 里运行
+  {
+    const svg = $('b1'); svg.innerHTML = ROOM + server();
+    const live = layer(svg);
+    sprite(layer(svg, 3, 18), typingFrames(), TYPE_SEQ);
+    every((t) => { const p = 0.3 + (t % 60) / 60 * 0.2; live.innerHTML = win(['$ ./backup.sh'], { bar: p, tmux: true }) + job('open', p); });
+  }
+  // b2：关窗，tmux server 里的进程接着跑
+  {
+    const svg = $('b2'); svg.innerHTML = ROOM + server();
+    const live = layer(svg);
+    sprite(layer(svg, 3, 18), typingFrames(), blinkSeq);
+    every((t) => {
+      const k = t % 44;
+      const scale = k < 8 ? 1 : k < 11 ? 1 - (k - 7) * 0.3 : 0;
+      const p = 0.5 + (t % 88) / 88 * 0.3;
+      let s = win(['$ ./backup.sh'], { bar: p, scale, tmux: true });
+      if (k < 8) s += pointer(Math.round(40 - k * 1.6), Math.round(16 - k * 1.3));
+      s += job('open', p);
+      live.innerHTML = s;
+    });
+  }
+  // b3：attach 回来，跑完了，Clawd 跳起来
+  {
+    const svg = $('b3'); svg.innerHTML = ROOM + server();
+    const live = layer(svg);
+    const f = (o, dy = 0) => rects(clawd({ face: 'right', ...o }), 0, dy);
+    sprite(layer(svg, 3, 18), [
+      f({ eyes: 'happy' }),
+      f({ eyes: 'happy', squash: true }),
+      f({ eyes: 'happy', arms: ['up', 'up'] }, -4),
+      f({ eyes: 'happy', arms: ['up', 'up'] }, -6),
+      f({ eyes: 'open' }),
+    ], [[4, 10], [0, 6], [1, 2], [2, 2], [3, 3], [2, 2], [1, 2], [0, 6], [1, 2], [2, 2], [3, 3], [2, 2], [1, 2], [0, 10]]);
+    every(() => { live.innerHTML = win(['$ ./backup.sh', '', 'done'], { bar: 1, tmux: true }) + job('open', 1); });
+  }
+})();
+</script>
+</body>
+</html>

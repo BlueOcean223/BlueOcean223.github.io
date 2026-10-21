@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clawd 面前的终端，从电传打字机到 Ghostty</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f; --faint-2: #b0aea5;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px 14px; }
+@media (max-width: 720px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .grid { gap: 14px 10px; } figcaption p { font-size: 12.5px; } .chain span { font-size: 11px; padding: 1px 5px; } }
+figure { margin: 0; }
+figure svg { width: 100%; display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+.yr { font: 600 12px var(--font-sans); color: var(--accent); margin-top: 9px; }
+.ttl { font: 600 15px/1.35 var(--font-sans); }
+figcaption p { margin: 4px 0 0; font-size: 13px; line-height: 1.55; color: var(--text-soft); }
+.chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 3px; margin-top: 9px; }
+.chain span { padding: 1px 7px; border-radius: 5px; background: var(--bg-soft); color: var(--muted); font-size: 11.5px; line-height: 1.6; white-space: nowrap; }
+.chain span.new { box-shadow: inset 0 0 0 1.5px var(--accent); color: var(--text); }
+.chain i { font-style: normal; color: var(--faint-2); font-size: 11px; }
+.cap { font-size: 12px; color: var(--muted); margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="grid">
+  <figure>
+    <svg id="p1" viewBox="0 0 64 40" shape-rendering="crispEdges" role="img" aria-label="Clawd 在电传打字机上打字，纸从上面一行行吐出来"></svg>
+    <figcaption>
+      <div class="yr">六十年代</div>
+      <div class="ttl">电传打字机</div>
+      <p>按下的键沿串口线发给主机，主机发回的字由打印头打在纸上。</p>
+      <div class="chain"><span>纸和键盘</span><i>→</i><span>串口线</span><i>→</i><span>tty 驱动</span><i>→</i><span>程序</span></div>
+    </figcaption>
+  </figure>
+  <figure>
+    <svg id="p2" viewBox="0 0 64 40" shape-rendering="crispEdges" role="img" aria-label="Clawd 在 VT100 上打字，屏幕写满后被一条 ESC [2J 清空"></svg>
+    <figcaption>
+      <div class="yr">1978</div>
+      <div class="ttl">VT100</div>
+      <p>纸换成了屏幕。主机发来以 ESC 开头的字节，就能清屏、移动光标。</p>
+      <div class="chain"><span class="new">屏幕和键盘</span><i>→</i><span>串口线</span><i>→</i><span>tty 驱动</span><i>→</i><span>程序</span></div>
+    </figcaption>
+  </figure>
+  <figure>
+    <svg id="p3" viewBox="0 0 64 40" shape-rendering="crispEdges" role="img" aria-label="Clawd 在图形工作站上用 xterm 窗口打字"></svg>
+    <figcaption>
+      <div class="yr">1984</div>
+      <div class="ttl">xterm</div>
+      <p>终端成了图形界面里的一个程序。串口线没有了，中间换成了别的东西。</p>
+      <div class="chain"><span class="new">xterm 窗口</span><i>→</i><span class="new">？</span><i>→</i><span>tty 驱动</span><i>→</i><span>程序</span></div>
+    </figcaption>
+  </figure>
+  <figure>
+    <svg id="p4" viewBox="0 0 64 40" shape-rendering="crispEdges" role="img" aria-label="Clawd 在笔记本上用 Ghostty 打字，旁边一杯咖啡"></svg>
+    <figcaption>
+      <div class="yr">今天</div>
+      <div class="ttl">Ghostty、iTerm2</div>
+      <p>画字用上了 GPU，扮演的还是那台 VT100。</p>
+      <div class="chain"><span class="new">Ghostty 窗口</span><i>→</i><span>？</span><i>→</i><span>tty 驱动</span><i>→</i><span>shell</span></div>
+    </figcaption>
+  </figure>
+</div>
+<div class="cap">橙色边框是那个年代换掉的部分。</div>
+
+<script src="clawd.js"></script>
+<script>
+(() => {
+  const { R, T, every, sprite, typingFrames, TYPE_SEQ } = Clawd;
+  const NS = 'http://www.w3.org/2000/svg';
+  const layer = (svg, x = 0, y = 0) => {
+    const g = document.createElementNS(NS, 'g');
+    if (x || y) g.setAttribute('transform', `translate(${x} ${y})`);
+    svg.appendChild(g);
+    return g;
+  };
+  const desk = () => R(0, 38, 64, 1, 'L') + R(20, 33, 44, 1, 'n') + R(20, 34, 44, 1, 'L') + R(22, 35, 2, 3, 'm') + R(59, 35, 2, 3, 'm');
+  const keyboard = (x, y, w) => {
+    let s = R(x, y, w, 2, 'L');
+    for (let i = x + 1; i < x + w - 1; i += 2) s += R(i, y, 1, 1, 'n');
+    return s;
+  };
+  const putClawd = (svg) => sprite(layer(svg, 4, 22), typingFrames(), TYPE_SEQ);
+  // 每一行的长度，循环取用，画面每次都一样
+  const LENS = [9, 14, 6, 12, 16, 8, 11, 5, 13, 10, 7, 15];
+
+  // 一、电传打字机：纸一行行往上走
+  {
+    const svg = document.getElementById('p1');
+    let keys = '';
+    for (let x = 22; x < 46; x += 2) keys += R(x, 29, 1, 1, 'n') + R(x + 1, 30, 1, 1, 'n');
+    svg.innerHTML = R(0, 38, 64, 1, 'L')
+      + R(30, 33, 3, 5, 'm') + R(51, 33, 3, 5, 'm') + R(30, 35, 24, 1, 'm')
+      + R(25, 21, 34, 12, 'l') + R(25, 32, 34, 1, 'L') + R(25, 21, 34, 1, 'L')
+      + R(21, 29, 26, 3, 'L') + keys
+      + R(31, 19, 22, 2, 'k');
+    const paper = layer(svg);
+    putClawd(svg);
+    const lines = [12, 7, 15, 10, 13];
+    let cur = 0, n = 0, target = LENS[0];
+    const draw = () => {
+      const top = Math.max(1, 16 - 2 * lines.length);
+      let s = R(32, top, 20, 19 - top, 'L') + R(33, top, 18, 19 - top, 'w');
+      [cur, ...lines].forEach((len, i) => { const y = 17 - 2 * i; if (y > top && len) s += R(34, y, len, 1, 'k'); });
+      s += R(33 + cur, 18, 3, 2, 'm');
+      paper.innerHTML = s;
+    };
+    every((t) => {
+      if (t && t % 3 === 0) {
+        cur++;
+        if (cur >= target) { lines.unshift(cur); if (lines.length > 9) lines.pop(); cur = 0; target = LENS[++n % LENS.length]; }
+      }
+      draw();
+    });
+  }
+
+  // 二、VT100：写满六行，收到 ESC [2J 清屏
+  {
+    const svg = document.getElementById('p2');
+    svg.innerHTML = desk() + R(36, 9, 26, 22, 'l') + R(36, 9, 26, 1, 'L') + R(38, 11, 22, 16, 'k') + R(39, 12, 20, 14, 'K')
+      + R(36, 27, 26, 4, 'l') + R(57, 28, 3, 1, 'm') + R(41, 31, 16, 2, 'L') + keyboard(21, 31, 18);
+    const scr = layer(svg);
+    const bubble = layer(svg);
+    bubble.innerHTML = R(37, 2, 24, 6, 'w') + R(37, 2, 24, 1, 'm') + R(37, 7, 24, 1, 'm') + R(37, 2, 1, 6, 'm') + R(60, 2, 1, 6, 'm')
+      + R(47, 8, 3, 1, 'm') + R(48, 9, 1, 1, 'm')
+      + T(49, 6.4, 'ESC [2J', 3.4, 'k', 'text-anchor="middle"');
+    putClawd(svg);
+    let done = [], cur = 0, n = 0, wait = 0, esc = 0;
+    every((t) => {
+      if (t) {
+        if (esc) { esc--; if (esc === 6) { done = []; cur = 0; } }
+        else if (wait) wait--;
+        else if (cur < LENS[n % LENS.length]) cur++;
+        else { done.push(cur); cur = 0; n++; wait = 2; if (done.length === 6) esc = 12; }
+      }
+      bubble.setAttribute('display', esc ? '' : 'none');
+      let s = '';
+      done.forEach((len, i) => { s += R(40, 13 + 2 * i, Math.min(len, 17), 1, 's'); });
+      const y = 13 + 2 * done.length;
+      if (done.length < 6) {
+        if (cur) s += R(40, y, Math.min(cur, 17), 1, 's');
+        if (Math.floor(t / 4) % 2 === 0) s += R(40 + Math.min(cur, 17), y - 0.5, 1, 1.5, 's');
+      }
+      scr.innerHTML = s;
+    });
+  }
+
+  // 三、xterm：工作站上的窗口
+  {
+    const svg = document.getElementById('p3');
+    const pointer = R(52, 18, 1, 3, 'K') + R(53, 19, 1, 1, 'K') + R(54, 20, 1, 1, 'K');
+    svg.innerHTML = desk() + R(33, 6, 30, 25, 'n') + R(33, 6, 30, 1, 'm') + R(35, 8, 26, 19, 'L')
+      + R(49, 11, 11, 9, 'w') + R(49, 11, 11, 1, 'K') + R(49, 11, 1, 9, 'K') + R(59, 11, 1, 9, 'K') + R(49, 19, 11, 1, 'K')
+      + R(37, 13, 18, 12, 'w') + R(37, 13, 18, 1, 'K') + R(37, 13, 1, 12, 'K') + R(54, 13, 1, 12, 'K') + R(37, 24, 18, 1, 'K')
+      + R(43, 31, 10, 2, 'n') + keyboard(21, 31, 18) + R(44, 32, 3, 1, 'm');
+    const scr = layer(svg);
+    const top = layer(svg);
+    top.innerHTML = pointer;
+    putClawd(svg);
+    let done = [5, 12, 8], cur = 0, n = 3;
+    every((t) => {
+      if (t && t % 2 === 0) {
+        if (cur < Math.min(LENS[n % LENS.length], 14)) cur++;
+        else { done.push(cur); cur = 0; n++; if (done.length > 4) done.shift(); }
+      }
+      let s = '';
+      done.forEach((len, i) => { s += R(39, 15 + 2 * i, len, 1, 'k'); });
+      const y = 15 + 2 * done.length;
+      if (cur) s += R(39, y, cur, 1, 'k');
+      if (Math.floor(t / 4) % 2 === 0) s += R(39 + cur, y - 0.5, 1, 1.5, 'k');
+      scr.innerHTML = s;
+    });
+  }
+
+  // 四、今天：笔记本上的 Ghostty，旁边一杯咖啡
+  {
+    const svg = document.getElementById('p4');
+    svg.innerHTML = desk() + R(26, 12, 23, 19, 'm') + R(27, 13, 21, 17, 'K') + R(27, 13, 21, 2, 'k') + R(28, 13, 6, 2, 'K') + R(29, 14, 4, 1, 'n')
+      + R(22, 31, 31, 2, 'm') + R(22, 31, 31, 1, 'L')
+      + R(55, 28, 5, 5, 'w') + R(55, 28, 5, 1, 'L') + R(60, 29, 1, 2, 'L') + R(55, 32, 5, 1, 'L');
+    const scr = layer(svg);
+    const steam = layer(svg);
+    putClawd(svg);
+    // 提示符一行，接着两行输出
+    const script = [['$', 7], ['o', 13], ['o', 9], ['$', 11], ['o', 6], ['$', 5], ['o', 14], ['o', 12], ['o', 4]];
+    let done = [], cur = 0, k = 0, wait = 0;
+    every((t) => {
+      if (t) {
+        const [kind, len] = script[k % script.length];
+        if (wait) wait--;
+        else if (kind === 'o') { done.push(['o', len]); k++; wait = 1; }
+        else if (cur < len) cur++;
+        else { done.push(['$', cur]); cur = 0; k++; wait = 3; }
+        while (done.length > 5) done.shift();
+      }
+      let s = '';
+      done.forEach(([kind, len], i) => {
+        const y = 17 + 2 * i;
+        s += kind === '$' ? R(28, y, 1, 1, 'a') + R(30, y, len, 1, 's') : R(28, y, len, 1, 'n');
+      });
+      const y = 17 + 2 * done.length;
+      const [kind] = script[k % script.length];
+      if (kind === '$') {
+        s += R(28, y, 1, 1, 'a') + (cur ? R(30, y, cur, 1, 's') : '');
+        if (Math.floor(t / 4) % 2 === 0) s += R(30 + cur, y - 0.5, 1, 1.5, 's');
+      }
+      scr.innerHTML = s;
+      const f = Math.floor(t / 5) % 2;
+      steam.innerHTML = f ? R(56, 25, 1, 2, 'g') + R(58, 24, 1, 2, 'g') + R(57, 22, 1, 1, 'g') : R(57, 25, 1, 2, 'g') + R(56, 23, 1, 1, 'g') + R(58, 22, 1, 2, 'g');
+    });
+  }
+})();
+</script>
+</body>
+</html>

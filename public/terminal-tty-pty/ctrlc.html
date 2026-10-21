@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>按下 Ctrl-C 之后，sleep 是怎么退出的</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f; --faint-2: #b0aea5;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 16px; }
+@media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+figure { margin: 0; }
+figure svg { width: 100%; display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+figcaption { display: flex; gap: 10px; margin-top: 9px; }
+.no { flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--text); color: #fff; font: 600 11.5px/20px var(--font-sans); text-align: center; margin-top: 1px; }
+.ttl { font: 600 14.5px/1.4 var(--font-sans); }
+figcaption p { margin: 2px 0 0; font-size: 13px; line-height: 1.6; color: var(--text-soft); }
+</style>
+</head>
+<body>
+<div class="grid">
+  <figure>
+    <svg id="p1" viewBox="0 0 80 36" shape-rendering="crispEdges" role="img" aria-label="屏幕上是 sleep 100，旁边的 sleep 进程闭着眼睛睡觉"></svg>
+    <figcaption><div class="no">1</div><div><div class="ttl">sleep 睡着了</div><p><code>sleep 100</code> 跑在前台。它不读键盘，只是等 100 秒过去。</p></div></figcaption>
+  </figure>
+  <figure>
+    <svg id="p2" viewBox="0 0 80 36" shape-rendering="crispEdges" role="img" aria-label="Clawd 同时按下 ctrl 和 C，一个写着 0x03 的字节飞了出去"></svg>
+    <figcaption><div class="no">2</div><div><div class="ttl">按下 Ctrl-C</div><p>Ghostty 往 master 写进一个字节 <code>0x03</code>。</p></div></figcaption>
+  </figure>
+  <figure>
+    <svg id="p3" viewBox="0 0 80 36" shape-rendering="crispEdges" role="img" aria-label="0x03 被 line discipline 拦下，SIGINT 飞向 sleep，^C 飞回屏幕"></svg>
+    <figcaption><div class="no">3</div><div><div class="ttl">line discipline 截下它</div><p>这个字节不交给任何程序。line discipline 给前台进程组发 SIGINT，再把 <code>^C</code> 回显到屏幕上。zsh 不在前台，收不到。</p></div></figcaption>
+  </figure>
+  <figure>
+    <svg id="p4" viewBox="0 0 80 36" shape-rendering="crispEdges" role="img" aria-label="sleep 不见了，屏幕上 echo $? 输出 130"></svg>
+    <figcaption><div class="no">4</div><div><div class="ttl">退出码 130</div><p>sleep 收到信号，按默认处理退出。SIGINT 的编号是 2，shell 记下的退出码是 128 + 2 = 130。</p></div></figcaption>
+  </figure>
+</div>
+
+<script src="clawd.js"></script>
+<script>
+(() => {
+  const { R, T, rects, clawd, every, sprite, typingFrames, TYPE_SEQ, chip, proc } = Clawd;
+  const NS = 'http://www.w3.org/2000/svg';
+  const layer = (svg, x = 0, y = 0) => {
+    const g = document.createElementNS(NS, 'g');
+    if (x || y) g.setAttribute('transform', `translate(${x} ${y})`);
+    svg.appendChild(g);
+    return g;
+  };
+  const FS = 2.6, CW = FS * 0.6;
+  // 桌子、键盘和显示器，第 1、4 格共用
+  const desk = () => {
+    let keys = '';
+    for (let x = 23; x < 37; x += 2) keys += R(x, 27, 1, 1, 'n');
+    return R(0, 34, 80, 1, 'L') + R(21, 29, 40, 1, 'n') + R(21, 30, 40, 1, 'L') + R(23, 31, 2, 3, 'm') + R(57, 31, 2, 3, 'm')
+      + R(30, 2, 28, 23, 'l') + R(30, 2, 28, 1, 'L') + R(32, 4, 24, 18, 'K') + R(41, 25, 6, 4, 'L')
+      + R(22, 27, 16, 2, 'L') + keys;
+  };
+  const screen = (lines) => lines.map((s, i) => T(33.5, 8 + i * 3.4, s, FS, s === '130' ? 'a' : 's')).join('');
+  const cursor = (row, col, t) => (Math.floor(t / 4) % 2 === 0 ? R(33.5 + col * CW, 8 + row * 3.4 - FS * 0.82, CW, FS, 's') : '');
+  const Z = (x, y) => R(x, y, 4, 1, 'm') + R(x + 2, y + 1, 1, 1, 'm') + R(x + 1, y + 2, 1, 1, 'm') + R(x, y + 3, 4, 1, 'm');
+
+  // 1：sleep 睡着了
+  {
+    const svg = document.getElementById('p1');
+    svg.innerHTML = desk() + screen(['$ sleep 100']) + proc(63, 21, 'sleep', 'closed');
+    const live = layer(svg);
+    sprite(layer(svg, 5, 18), typingFrames(), [[0, 26], [2, 1], [0, 3]]);
+    every((t) => {
+      const k = t % 24;
+      live.innerHTML = cursor(1, 0, t) + (k < 16 ? Z(73, 15 - Math.floor(k / 4)) : '') + (k >= 8 ? Z(76, 11 - Math.floor((k - 8) / 4)) : '');
+    });
+  }
+
+  // 2：按下 Ctrl-C
+  {
+    const svg = document.getElementById('p2');
+    const me = layer(svg, 20, 12);
+    const keys = layer(svg);
+    const fly = layer(svg);
+    const KEYS = [[6, 14, 'ctrl'], [21, 7, ''], [29, 5, ''], [35, 8, 'C'], [44, 7, '']];
+    const drawKeys = (down) => R(4, 27, 50, 3, 'L') + R(0, 30, 80, 1, 'n') + KEYS.map(([x, w, label]) => {
+      const d = down && label ? 1 : 0;
+      const e = d ? 'a' : 'm';
+      return R(x, 20 + d, w, 7 - d, e) + R(x, 20 + d, w, 5, d ? '#fbeee8' : 'w') + R(x, 20 + d, w, 1, e) + R(x, 20 + d, 1, 5, e) + R(x + w - 1, 20 + d, 1, 5, e)
+        + (label ? T(x + w / 2, 24.2 + d, label, 2.6, d ? 'a' : 'k', 'text-anchor="middle"') : '');
+    }).join('');
+    const up = rects(clawd({ eyes: 'open', look: 1, arms: ['high', 'high'] }));
+    const press = rects(clawd({ eyes: 'flat', squash: true }));
+    let shown = -1;
+    every((t) => {
+      const k = t % 36;
+      const down = k >= 8 && k < 14;
+      if (shown !== +down) { me.innerHTML = down ? press : up; keys.innerHTML = drawKeys(down); shown = +down; }
+      fly.innerHTML = k >= 10 && k < 26 ? chip(50 + (k - 10) * 1.8, 14, '0x03') : '';
+    });
+  }
+
+  // 3：line discipline 截下 0x03
+  {
+    const svg = document.getElementById('p3');
+    svg.innerHTML = R(0, 34, 80, 1, 'L')
+      + R(2, 15, 15, 11, 'l') + R(3, 16, 13, 8, 'K') + R(7, 26, 5, 2, 'L')
+      + R(30, 10, 2, 24, 'n') + R(48, 10, 2, 24, 'n') + R(30, 10, 20, 2, 'n') + R(32, 12, 16, 1, 'm')
+      + [0, 1, 2, 3].map((i) => R(32 + i * 4, 22, 4, 2, i % 2 ? 'w' : 'r')).join('') + R(32, 22, 16, 0.3, 'm') + R(32, 24, 16, 0.3, 'm')
+      + T(40, 8, 'line discipline', 2.6, 'k', 'text-anchor="middle"')
+      + proc(64, 5, 'zsh', 'closed', true);
+    const live = layer(svg);
+    every((t) => {
+      const k = t % 40;
+      let s = '';
+      if (k < 10) s += chip(12 + k * 1.7, 19, '0x03');
+      else if (Math.floor(k / 3) % 2 === 0 || k >= 30) s += chip(29, 19, '0x03');
+      if (k >= 12 && k < 22) s += chip(53 + (k - 12) * 0.5, 27, 'SIGINT', 'sig', 2.4);
+      if (k >= 12 && k < 22) s += chip(26 - (k - 12) * 0.9, 29, '^C', 'back');
+      if (k >= 22) s += T(5, 21, '^C', 2.6, 's');
+      s += proc(64, 21, 'sleep', k >= 21 ? 'wide' : 'closed');
+      if (k >= 21) s += R(77, 15, 1, 3, 'a') + R(77, 19, 1, 1, 'a');
+      live.innerHTML = s;
+    });
+  }
+
+  // 4：退出码 130
+  {
+    const svg = document.getElementById('p4');
+    svg.innerHTML = desk() + screen(['$ sleep 100', '^C', '$ echo $?', '130', '$']);
+    const live = layer(svg);
+    sprite(layer(svg, 5, 18), [
+      rects(clawd({ face: 'right', eyes: 'happy' })),
+      rects(clawd({ face: 'right', eyes: 'blink' })),
+      rects(clawd({ face: 'right', eyes: 'open' })),
+    ], [[0, 18], [2, 10], [1, 1], [2, 8]]);
+    every((t) => {
+      const k = t % 30;
+      const poof = k < 12 ? R(64, 28, 2, 2, 'L') + R(69, 26, 3, 3, 'L') + R(74, 29, 2, 2, 'L') + R(67, 31, 2, 1, 'L') : k < 20 ? R(66, 27, 1, 1, 'L') + R(72, 25, 2, 2, 'L') + R(75, 28, 1, 1, 'L') : '';
+      live.innerHTML = cursor(4, 2, t) + poof;
+    });
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>逐字节执行的 VT 解析器</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f; --faint-2: #b0aea5;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --hair: rgba(20,20,19,.1); --hair-2: rgba(20,20,19,.2);
+  --cloud: #c5d3e0; --manilla: #ebdbbc; --heather: #cbcadb; --orchid: #e5cada;
+  --term: #141413; --term-line: #2f2f2c; --term-text: #e8e6dc; --term-dim: #87867f;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; }
+.label { font: 500 12px var(--font-sans); color: var(--muted); margin: 0 0 6px; }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 13px; font: 500 12.5px var(--font-sans); cursor: pointer; transition: background .2s, border-color .2s; white-space: nowrap; }
+.btn:hover { background: var(--bg-soft); }
+.btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.src { width: 100%; min-height: 50px; background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; font: 12.5px/1.5 var(--font-mono); padding: 8px 10px; resize: vertical; }
+.src:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.grid { display: grid; grid-template-columns: 1.05fr 1fr; gap: 18px; margin-top: 12px; }
+.grid > * { min-width: 0; }
+@media (max-width: 680px) { .grid { grid-template-columns: 1fr; } }
+.bytes { display: flex; flex-wrap: wrap; gap: 3px; padding: 8px; background: var(--bg); border: 1px solid var(--hair); border-radius: 8px; height: 150px; overflow: auto; align-content: flex-start; position: relative; overscroll-behavior: contain; }
+.b { display: flex; flex-direction: column; align-items: center; min-width: 24px; padding: 1px 3px; border-radius: 4px; font: 12px/1.35 var(--font-mono); border: 1px solid transparent; cursor: pointer; transition: transform .15s; color: var(--text); }
+.b small { font-size: 9px; color: var(--faint); }
+.b.t-text { background: var(--bg-soft); }
+.b.t-ctrl { background: var(--manilla); color: #7a4f20; }
+.b.t-csi { background: var(--cloud); color: #2d5680; }
+.b.t-osc { background: var(--orchid); color: #8a3557; }
+.b.t-esc { background: var(--heather); color: #4c4790; }
+.b.todo { opacity: .4; }
+.b.cur { border-color: var(--text); opacity: 1; transform: translateY(-2px); }
+.ctrl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0; }
+.ctrl input[type=range] { flex: 1; min-width: 120px; accent-color: var(--accent); }
+.win { background: var(--term); border-radius: 10px; }
+.win-bar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--term-line); }
+.win-bar i { width: 9px; height: 9px; border-radius: 50%; background: #4a4a46; flex: none; }
+.win-title { flex: 1; text-align: center; font: 11.5px var(--font-mono); color: var(--term-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.screen { border-radius: 0 0 10px 10px; padding: 10px 12px; font: 12.5px/1.5 var(--font-mono); color: var(--term-text); overflow: hidden; }
+.screen .r { height: 1.5em; white-space: nowrap; }
+.screen .c { display: inline-block; width: 1ch; text-align: left; vertical-align: top; }
+.screen .c.w { width: 2ch; }
+.screen .c.cur { outline: 1.5px solid var(--accent); outline-offset: -1px; }
+.screen.bell { animation: bell .3s; }
+@keyframes bell { 50% { background: #3a2a20; } }
+.desc { min-height: 84px; padding: 8px 12px; border-radius: 8px; background: var(--bg); border: 1px solid var(--hair); font-size: 13.5px; line-height: 1.6; }
+.desc .pos { font: 11.5px var(--font-mono); color: var(--faint); }
+.desc code { color: var(--accent-hover); }
+.actions { margin: 8px 0 0; padding: 0 0 0 20px; font-size: 12.5px; line-height: 1.65; color: var(--muted); height: 112px; overflow: auto; overscroll-behavior: contain; }
+svg { width: 100%; height: auto; display: block; }
+.st rect { fill: #fff; stroke: var(--hair-2); stroke-width: 1; transition: .2s; }
+.st text { fill: var(--muted); font: 12px var(--font-mono); }
+.st.on rect { fill: var(--accent); stroke: var(--accent); }
+.st.on text { fill: #fff; }
+.ed { fill: none; stroke: var(--faint-2); stroke-width: 1.3; transition: .2s; }
+.ed.on { stroke: var(--accent); stroke-width: 2.4; }
+.ed-l { fill: var(--faint); font: 11px var(--font-sans); }
+.cap { margin-top: 10px; color: var(--muted); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+<div class="presets" id="presets"></div>
+<textarea class="src" id="src" spellcheck="false" aria-label="要解析的字节"></textarea>
+<div class="grid">
+  <div>
+    <div class="label">字节流（颜色表示属于哪一类）</div>
+    <div class="bytes" id="bytes"></div>
+    <div class="ctrl">
+      <button class="btn" id="reset" title="回到开头">⟲</button>
+      <button class="btn" id="back" title="后退一个字节">◀</button>
+      <button class="btn" id="play">▶ 播放</button>
+      <button class="btn" id="step">单步 ▶</button>
+      <button class="btn" id="end" title="跳到结尾">⇥</button>
+      <input type="range" id="range" min="0" max="0" value="0" aria-label="进度">
+    </div>
+    <div class="label">解析器状态</div>
+    <svg viewBox="0 0 520 172" id="fsm"></svg>
+  </div>
+  <div>
+    <div class="label">屏幕</div>
+    <div class="win"><div class="win-bar"><i></i><i></i><i></i><div class="win-title" id="title">zsh</div></div><div class="screen" id="screen"></div></div>
+    <div class="label" style="margin-top:10px">这一步做了什么</div>
+    <div class="desc" id="desc"></div>
+    <ol class="actions" id="actions" reversed></ol>
+  </div>
+</div>
+<div class="cap">输入框里可以用 <code>\e</code> 表示 ESC，还支持 <code>\r</code>、<code>\n</code>、<code>\a</code>，可以自己改。解析器照 Paul Williams 的 DEC 状态机简化而来，只实现了常用的几条指令。</div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const NS = 'http://www.w3.org/2000/svg';
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function S(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs || {}) { if (k === 'text') e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]); }
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  const PRESETS = [
+    ['ls 的彩色输出', '\\e[34mApplications\\e[39;49m\\e[0m  \\e[35mhome\\e[0m  bin\\r\\n'],
+    ['进度条：\\r 覆盖同一行', '下载 [##        ] 20%\\r下载 [#####     ] 50%\\r下载 [##########] 100%\\r\\n'],
+    ['清屏和光标定位', '\\e[2J\\e[1;1H\\e[7m 状态栏 · pi review \\e[0m\\e[4;6H光标跳到第 4 行第 6 列\\e[6;6H\\e[1;32m✓\\e[0m 测试通过'],
+    ['OSC：改窗口标题', '\\e]0;pi — subagent review\\a标题改了，屏幕上没有多出字符\\r\\n'],
+    ['TUI 局部刷新', 'line 1\\r\\nline 2\\r\\nline 3\\e[2A\\r\\e[2K\\e[33m● working…\\e[0m\\e[2B\\r\\n'],
+  ];
+  const ROWS = 7, COLS = 44;
+  const srcEl = $('#src'), bytesEl = $('#bytes'), rangeEl = $('#range');
+  let chars = [], types = [], idx = 0, playing = null;
+  let st, scr, cur, pen, params, osc, title, actions, lastDesc, lastEdge, cursorVisible;
+
+  function unescape(s) {
+    return s.replace(/\\(e|a|r|n|t|b|x[0-9a-fA-F]{2}|033|\\)/g, (m, g) => {
+      if (g === 'e' || g === '033') return '\x1b';
+      if (g === 'a') return '\x07'; if (g === 'r') return '\r'; if (g === 'n') return '\n';
+      if (g === 't') return '\t'; if (g === 'b') return '\b'; if (g === '\\') return '\\';
+      return String.fromCharCode(parseInt(g.slice(1), 16));
+    });
+  }
+  const isWide = (cp) => (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1faff);
+  const blank = () => ({ ch: ' ', fg: null, bg: null, bold: false, inv: false, cont: false });
+  function reset() {
+    st = 'GROUND'; scr = Array.from({ length: ROWS }, () => Array.from({ length: COLS }, blank));
+    cur = { r: 0, c: 0 }; pen = { fg: null, bg: null, bold: false, inv: false };
+    params = ''; osc = ''; title = 'zsh'; actions = []; lastDesc = '还没开始。点“单步”或“播放”，也可以直接点某个字节。'; lastEdge = null; cursorVisible = true;
+  }
+  const COLORS = ['#5e5d59', '#de6262', '#9db37f', '#f0ac54', '#6a9bcc', '#c46686', '#7fb5a3', '#e8e6dc'];
+  const BRIGHT = ['#87867f', '#ec8a8a', '#b9cc9c', '#f6c47f', '#93b9de', '#d98ca8', '#a3cdbf', '#ffffff'];
+  const CNAME = ['黑', '红', '绿', '黄', '蓝', '品红', '青', '白'];
+  function lineFeed() { if (cur.r < ROWS - 1) cur.r++; else { scr.shift(); scr.push(Array.from({ length: COLS }, blank)); } }
+  function print(ch) {
+    const cp = ch.codePointAt(0), w = isWide(cp) ? 2 : 1;
+    if (cur.c + w > COLS) { cur.c = 0; lineFeed(); }
+    scr[cur.r][cur.c] = { ch, ...pen, cont: false, wide: w === 2 };
+    if (w === 2 && cur.c + 1 < COLS) scr[cur.r][cur.c + 1] = { ...blank(), cont: true };
+    const at = `第 ${cur.r + 1} 行第 ${cur.c + 1} 列`;
+    cur.c += w;
+    return `打印 <code>${esc(ch)}</code> 到${at}` + (w === 2 ? '（宽字符，占两列）' : '');
+  }
+  function sgr(p) {
+    const ps = p === '' ? [0] : p.split(';').map((x) => parseInt(x || '0', 10));
+    const out = [];
+    for (let i = 0; i < ps.length; i++) {
+      const n = ps[i];
+      if (n === 0) { pen = { fg: null, bg: null, bold: false, inv: false }; out.push('0 重置所有属性'); }
+      else if (n === 1) { pen.bold = true; out.push('1 粗体'); }
+      else if (n === 22) { pen.bold = false; out.push('22 取消粗体'); }
+      else if (n === 7) { pen.inv = true; out.push('7 反色'); }
+      else if (n === 27) { pen.inv = false; out.push('27 取消反色'); }
+      else if (n >= 30 && n <= 37) { pen.fg = COLORS[n - 30]; out.push(`${n} 前景${CNAME[n - 30]}`); }
+      else if (n === 39) { pen.fg = null; out.push('39 默认前景色'); }
+      else if (n >= 40 && n <= 47) { pen.bg = COLORS[n - 40]; out.push(`${n} 背景${CNAME[n - 40]}`); }
+      else if (n === 49) { pen.bg = null; out.push('49 默认背景色'); }
+      else if (n >= 90 && n <= 97) { pen.fg = BRIGHT[n - 90]; out.push(`${n} 亮${CNAME[n - 90]}前景`); }
+      else if (n === 38 && ps[i + 1] === 5) { out.push(`38;5;${ps[i + 2]} 256 色前景（演示里忽略）`); i += 2; }
+      else out.push(`${n}（演示里没实现）`);
+    }
+    return `SGR（设置字符属性）：${out.join('，')}`;
+  }
+  function csi(fin, p) {
+    const priv = p.startsWith('?'), nums = p.replace('?', '').split(';').map((x) => x === '' ? NaN : parseInt(x, 10));
+    const n1 = isNaN(nums[0]) ? 1 : nums[0];
+    const seq = `<code>ESC [ ${esc(p)} ${esc(fin)}</code> → `;
+    switch (fin) {
+      case 'm': return seq + sgr(p);
+      case 'H': case 'f': {
+        const r = isNaN(nums[0]) ? 1 : nums[0], c = isNaN(nums[1]) ? 1 : nums[1];
+        cur.r = Math.min(ROWS - 1, r - 1); cur.c = Math.min(COLS - 1, c - 1);
+        return seq + `CUP：光标移到第 ${r} 行第 ${c} 列`;
+      }
+      case 'A': cur.r = Math.max(0, cur.r - n1); return seq + `CUU：光标上移 ${n1} 行`;
+      case 'B': cur.r = Math.min(ROWS - 1, cur.r + n1); return seq + `CUD：光标下移 ${n1} 行`;
+      case 'C': cur.c = Math.min(COLS - 1, cur.c + n1); return seq + `CUF：光标右移 ${n1} 列`;
+      case 'D': cur.c = Math.max(0, cur.c - n1); return seq + `CUB：光标左移 ${n1} 列`;
+      case 'J': {
+        const m = isNaN(nums[0]) ? 0 : nums[0];
+        if (m === 2 || m === 3) { scr = Array.from({ length: ROWS }, () => Array.from({ length: COLS }, blank)); return seq + 'ED 2：清掉整个屏幕（光标不动）'; }
+        for (let c = cur.c; c < COLS; c++) scr[cur.r][c] = blank();
+        for (let r = cur.r + 1; r < ROWS; r++) scr[r] = Array.from({ length: COLS }, blank);
+        return seq + 'ED 0：清掉从光标到屏幕末尾';
+      }
+      case 'K': {
+        const m = isNaN(nums[0]) ? 0 : nums[0];
+        if (m === 2) { scr[cur.r] = Array.from({ length: COLS }, blank); return seq + 'EL 2：清掉光标所在的整行'; }
+        if (m === 1) { for (let c = 0; c <= cur.c; c++) scr[cur.r][c] = blank(); return seq + 'EL 1：清掉行首到光标'; }
+        for (let c = cur.c; c < COLS; c++) scr[cur.r][c] = blank(); return seq + 'EL 0：清掉光标到行尾';
+      }
+      case 'h': case 'l': {
+        const on = fin === 'h';
+        if (priv && nums[0] === 25) { cursorVisible = on; return seq + (on ? '显示光标' : '隐藏光标'); }
+        if (priv && nums[0] === 1049) return seq + (on ? '切到备用屏幕（vim、TUI 启动时）' : '切回主屏幕（TUI 退出时）');
+        if (priv && nums[0] === 2004) return seq + (on ? '打开 bracketed paste' : '关闭 bracketed paste');
+        return seq + '模式设置（演示里没实现）';
+      }
+      default: return seq + '（演示里没实现）';
+    }
+  }
+  function oscDispatch(s) {
+    const [code, ...rest] = s.split(';'); const v = rest.join(';');
+    if (code === '0' || code === '2') { title = v; return `OSC ${code}：把窗口标题设成“${esc(v)}”，看屏幕上方的标题栏`; }
+    if (code === '8') return 'OSC 8：超链接';
+    if (code === '52') return 'OSC 52：写剪贴板';
+    return `OSC ${esc(code)}（演示里没实现）`;
+  }
+  function step(ch) {
+    const cp = ch.codePointAt(0);
+    switch (st) {
+      case 'GROUND':
+        if (cp === 0x1b) { st = 'ESCAPE'; return ['G-E', '<code>ESC</code>（0x1B）：进入 ESCAPE 状态，后面的字节不再直接显示']; }
+        if (cp === 0x0d) { cur.c = 0; return ['G-G', '<code>\\r</code> 回车：光标回到本行第 1 列']; }
+        if (cp === 0x0a) { lineFeed(); return ['G-G', '<code>\\n</code> 换行：光标下移一行，列不变']; }
+        if (cp === 0x08) { cur.c = Math.max(0, cur.c - 1); return ['G-G', '<code>\\b</code> 退格：光标左移一列，不删字']; }
+        if (cp === 0x09) { cur.c = Math.min(COLS - 1, (Math.floor(cur.c / 8) + 1) * 8); return ['G-G', '<code>\\t</code>：光标跳到下一个制表位']; }
+        if (cp === 0x07) { const s = $('#screen'); s.classList.remove('bell'); void s.offsetWidth; s.classList.add('bell'); return ['G-G', '<code>BEL</code>：响铃']; }
+        if (cp < 0x20) return ['G-G', `控制字符 0x${cp.toString(16)}（忽略）`];
+        return ['G-G', print(ch)];
+      case 'ESCAPE':
+        if (ch === '[') { st = 'CSI'; params = ''; return ['E-C', '<code>[</code>：CSI（Control Sequence Introducer），开始收集参数']; }
+        if (ch === ']') { st = 'OSC'; osc = ''; return ['E-O', '<code>]</code>：OSC（Operating System Command），开始收集字符串']; }
+        st = 'GROUND'; return ['E-G', `<code>ESC ${esc(ch)}</code>：两个字节的转义序列（演示里没实现）`];
+      case 'CSI':
+        if (/[0-9;?]/.test(ch)) { params += ch; return ['C-C', `收集参数：<code>${esc(params)}</code>`]; }
+        if (cp >= 0x40 && cp <= 0x7e) { st = 'GROUND'; const d = csi(ch, params); actions.push(d); return ['C-G', d]; }
+        return ['C-C', '（忽略）'];
+      case 'OSC':
+        if (cp === 0x07) { st = 'GROUND'; const d = oscDispatch(osc); actions.push(d); return ['O-G', 'BEL 结束 OSC → ' + d]; }
+        if (cp === 0x1b) { st = 'OSC_ESC'; return ['O-O', 'ESC：可能是 ST（ESC \\）的开头']; }
+        osc += ch; return ['O-O', `收集 OSC 字符串：<code>${esc(osc)}</code>`];
+      case 'OSC_ESC':
+        st = 'GROUND';
+        if (ch === '\\') { const d = oscDispatch(osc); actions.push(d); return ['O-G', 'ST 结束 OSC → ' + d]; }
+        return ['O-G', '不完整的 OSC，丢掉'];
+    }
+  }
+  function tokenize() {
+    types = []; let s = 'G';
+    for (const ch of chars) {
+      const cp = ch.codePointAt(0);
+      if (s === 'G') {
+        if (cp === 0x1b) { s = 'E'; types.push('esc'); }
+        else types.push(cp < 0x20 ? 'ctrl' : 'text');
+      } else if (s === 'E') {
+        if (ch === '[') { s = 'C'; types[types.length - 1] = 'csi'; types.push('csi'); }
+        else if (ch === ']') { s = 'O'; types[types.length - 1] = 'osc'; types.push('osc'); }
+        else { s = 'G'; types.push('esc'); }
+      } else if (s === 'C') { types.push('csi'); if (cp >= 0x40 && cp <= 0x7e) s = 'G'; }
+      else if (s === 'O') { types.push('osc'); if (cp === 0x07) s = 'G'; else if (cp === 0x1b) s = 'OE'; }
+      else if (s === 'OE') { types.push('osc'); s = 'G'; }
+    }
+  }
+  const SHOW = { '\x1b': '␛', '\r': '\\r', '\n': '\\n', '\x07': '␇', ' ': '␠', '\t': '\\t', '\b': '\\b' };
+  const utf8hex = (ch) => Array.from(new TextEncoder().encode(ch)).map((b) => b.toString(16).padStart(2, '0')).join(' ');
+  function load(src) {
+    stop();
+    chars = Array.from(unescape(src)); tokenize();
+    bytesEl.innerHTML = chars.map((ch, i) => `<span class="b t-${types[i]} todo" data-i="${i}">${esc(SHOW[ch] ?? ch)}<small>${utf8hex(ch)}</small></span>`).join('');
+    $$('.b', bytesEl).forEach((b) => b.onclick = () => { stop(); goto(+b.dataset.i + 1); });
+    rangeEl.max = chars.length;
+    bytesEl.scrollTop = 0;
+    goto(0);
+  }
+  function goto(n) {
+    reset();
+    n = Math.max(0, Math.min(chars.length, n));
+    for (let i = 0; i < n; i++) { const [edge, d] = step(chars[i]); lastEdge = edge; lastDesc = d; }
+    idx = n; render();
+  }
+  // 只滚字节框自己。scrollIntoView 会连带滚动外层的博客页面
+  function keepVisible(el) {
+    if (!el) return;
+    // .bytes 是 position: relative，offsetTop 直接相对于它
+    const top = el.offsetTop, bottom = top + el.offsetHeight;
+    if (top < bytesEl.scrollTop + 4) bytesEl.scrollTop = top - 4;
+    else if (bottom > bytesEl.scrollTop + bytesEl.clientHeight - 4) bytesEl.scrollTop = bottom - bytesEl.clientHeight + 4;
+  }
+  function render() {
+    const cells = $$('.b', bytesEl);
+    cells.forEach((c, i) => { c.classList.toggle('todo', i >= idx); c.classList.toggle('cur', i === idx - 1); });
+    keepVisible(cells[idx - 1]);
+    rangeEl.value = idx;
+    $('#title').textContent = title;
+    let html = '';
+    for (let r = 0; r < ROWS; r++) {
+      html += '<div class="r">';
+      for (let c = 0; c < COLS; c++) {
+        const cell = scr[r][c];
+        if (cell.cont) continue;
+        let fg = cell.fg, bg = cell.bg;
+        if (cell.inv) { const t = fg || '#e8e6dc'; fg = bg || '#141413'; bg = t; }
+        const style = (fg ? `color:${fg};` : '') + (bg ? `background:${bg};` : '') + (cell.bold ? 'font-weight:700;' : '');
+        const isCur = cursorVisible && r === cur.r && c === cur.c;
+        html += `<span class="c${cell.wide ? ' w' : ''}${isCur ? ' cur' : ''}"${style ? ` style="${style}"` : ''}>${cell.ch === ' ' ? '&nbsp;' : esc(cell.ch)}</span>`;
+      }
+      html += '</div>';
+    }
+    $('#screen').innerHTML = html;
+    $('#desc').innerHTML = (idx ? `<span class="pos">字节 ${idx}/${chars.length} · 状态 ${st === 'OSC_ESC' ? 'OSC' : st}</span><br>` : '') + lastDesc;
+    $('#actions').innerHTML = actions.slice(-6).reverse().map((a) => `<li>${a}</li>`).join('');
+    drawFsm();
+  }
+  /* 状态图 */
+  const fsm = $('#fsm');
+  const SN = { GROUND: [70, 86], ESCAPE: [215, 86], CSI: [380, 40], OSC: [380, 134] };
+  const EDGES = {
+    'G-E': 'M108,86 L177,86', 'E-C': 'M253,78 L334,46', 'E-O': 'M253,94 L334,128',
+    'C-G': 'M380,24 C380,6 70,6 70,68', 'O-G': 'M380,152 C380,170 70,170 70,104',
+    'E-G': 'M180,98 C150,120 110,120 96,104', 'C-C': 'M424,32 C470,14 470,66 424,48', 'O-O': 'M424,126 C470,108 470,160 424,142',
+    'G-G': 'M40,76 C2,60 2,112 40,96',
+  };
+  function drawFsm() {
+    fsm.innerHTML = '';
+    const defs = S('defs', null, fsm);
+    [['arr', '#b0aea5'], ['arr2', '#d97757']].forEach(([id, c]) => {
+      const mk = S('marker', { id, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: 'auto-start-reverse' }, defs);
+      S('path', { d: 'M0,0 L10,5 L0,10 z', fill: c }, mk);
+    });
+    for (const [id, d] of Object.entries(EDGES)) {
+      const on = id === lastEdge;
+      S('path', { d, class: 'ed' + (on ? ' on' : ''), 'marker-end': on ? 'url(#arr2)' : 'url(#arr)' }, fsm);
+    }
+    [['ESC', 142, 80], ['[', 296, 54], [']', 296, 124], ['结束字节', 225, 14], ['BEL / ST', 225, 168], ['参数', 470, 44], ['字符串', 470, 138]]
+      .forEach(([t, x, y]) => S('text', { x, y, class: 'ed-l', 'text-anchor': 'middle', text: t }, fsm));
+    const curSt = st === 'OSC_ESC' ? 'OSC' : st;
+    for (const [name, [x, y]] of Object.entries(SN)) {
+      const g = S('g', { class: 'st' + (name === curSt ? ' on' : '') }, fsm);
+      S('rect', { x: x - 38, y: y - 16, width: 76, height: 32, rx: 8 }, g);
+      S('text', { x, y: y + 4, 'text-anchor': 'middle', text: name }, g);
+    }
+  }
+  /* 控制 */
+  function stop() { if (playing) { clearInterval(playing); playing = null; } $('#play').textContent = '▶ 播放'; }
+  function advance() { const [e, d] = step(chars[idx]); lastEdge = e; lastDesc = d; idx++; render(); }
+  $('#play').onclick = () => {
+    if (playing) return stop();
+    if (idx >= chars.length) goto(0);
+    $('#play').textContent = '⏸ 暂停';
+    playing = setInterval(() => { if (idx >= chars.length) return stop(); advance(); }, 230);
+  };
+  $('#step').onclick = () => { stop(); if (idx < chars.length) advance(); };
+  $('#back').onclick = () => { stop(); goto(idx - 1); };
+  $('#reset').onclick = () => { stop(); goto(0); };
+  $('#end').onclick = () => { stop(); goto(chars.length); };
+  rangeEl.oninput = () => { stop(); goto(+rangeEl.value); };
+  let deb;
+  srcEl.oninput = () => { clearTimeout(deb); deb = setTimeout(() => { $$('#presets .btn').forEach((b) => b.classList.remove('on')); load(srcEl.value); }, 300); };
+  PRESETS.forEach(([name, src], i) => {
+    const b = document.createElement('button'); b.className = 'btn' + (i === 0 ? ' on' : ''); b.textContent = name;
+    b.onclick = () => { $$('#presets .btn').forEach((x) => x.classList.remove('on')); b.classList.add('on'); srcEl.value = src; load(src); };
+    $('#presets').appendChild(b);
+  });
+  srcEl.value = PRESETS[0][1]; load(PRESETS[0][1]);
+})();
+</script>
+</body>
+</html>

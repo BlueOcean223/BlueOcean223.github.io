@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>谁持有 pty 的 master：几种常见的组合</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f; --faint-2: #b0aea5;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --hair: rgba(20,20,19,.1);
+  --sky: #6a9bcc; --olive: #788c5d; --kraft: #d4a27f; --plum: #827dbd; --fig: #c46686; --mineral: #629987; --poppy: #de6262; --pencil: #f0ac54;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 14px; font: 500 12.5px var(--font-sans); cursor: pointer; transition: background .2s, border-color .2s; white-space: nowrap; }
+.btn:hover { background: var(--bg-soft); }
+.btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn:disabled:hover { background: var(--bg); }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+svg { width: 100%; height: auto; display: block; background: var(--bg); border-radius: 10px; }
+.tn rect.box { stroke-width: 1.4; transition: fill .3s, stroke .3s, opacity .3s; }
+.tn .t1 { font: 600 15px var(--font-sans); fill: var(--text); }
+.tn .t2 { font: 12px var(--font-mono); fill: var(--muted); }
+.tn.k-emu rect.box { fill: #e6edf4; stroke: var(--sky); }
+.tn.k-mux rect.box { fill: #ebeaf3; stroke: var(--plum); }
+.tn.k-prog rect.box { fill: #eef1e8; stroke: var(--olive); }
+.tn.k-pty rect.box { fill: #f7efe2; stroke: var(--kraft); }
+.tn.k-net rect.box { fill: #f6e9ef; stroke: var(--fig); }
+.tn.k-file rect.box { fill: #fff; stroke: var(--faint); stroke-dasharray: 4 3; }
+.tn.k-user rect.box { fill: #e7f0ed; stroke: var(--mineral); }
+.tn .vt rect { fill: var(--plum); }
+.tn .vt text { fill: #fff; font: 600 11.5px var(--font-sans); }
+.tn .badge circle { stroke: #fff; stroke-width: 2; }
+.tn { transition: opacity .3s; }
+.tn.closed { opacity: .22; }
+.tn.dead rect.box { stroke: var(--poppy); fill: #fbeaea; }
+.tn.dead .t1 { fill: #b03a3a; text-decoration: line-through; }
+.tn.alive rect.box { stroke: var(--olive); stroke-width: 2.6; }
+.tn.suspend rect.box { stroke: var(--pencil); stroke-width: 2.6; }
+.tn .stat { font: 600 12px var(--font-sans); }
+.tn.dead .stat { fill: #b03a3a; } .tn.alive .stat { fill: #56693f; } .tn.suspend .stat { fill: #a86a1c; } .tn.closed .stat { fill: var(--faint); }
+.te path { fill: none; stroke-width: 1.8; }
+.te.k-pty path { stroke: var(--kraft); }
+.te.k-sock path { stroke: var(--plum); stroke-dasharray: 6 4; }
+.te.k-net path { stroke: var(--fig); }
+.te.k-pipe path { stroke: var(--faint-2); }
+.te.k-file path { stroke: var(--faint); stroke-dasharray: 2 4; }
+.te.k-fd path { stroke: var(--accent); stroke-dasharray: 5 4; }
+.te.k-pty circle { fill: #b98457; } .te.k-sock circle { fill: var(--plum); } .te.k-net circle { fill: var(--fig); }
+.te.k-pipe circle, .te.k-file circle { fill: var(--faint); } .te.k-fd circle { fill: var(--accent); }
+.te text { font: 12px var(--font-sans); fill: var(--muted); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; }
+.te.cut path { stroke: var(--poppy); stroke-dasharray: 3 6; opacity: .5; }
+.te.cut circle { display: none; }
+.region rect { fill: rgba(229,202,218,.18); stroke: var(--fig); stroke-dasharray: 6 5; }
+.region text { fill: var(--fig); font: 600 12px var(--font-sans); }
+/* 各场景的说明长短不一，给一个能装下最长那段的高度 */
+.info { display: grid; grid-template-columns: 1fr 1.35fr; gap: 6px 28px; align-items: start; margin-top: 14px; min-height: 216px; }
+.info > * { min-width: 0; }
+@media (max-width: 680px) { .info { grid-template-columns: 1fr; } }
+.info h3 { margin: 0 0 8px; font: 600 16px var(--font-sans); }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; margin: 0 0 10px; }
+.facts dt { color: var(--muted); font-size: 12px; line-height: 1.75; }
+.facts dd { margin: 0; }
+.note { font-size: 13.5px; line-height: 1.7; color: var(--text-soft); }
+.note p { margin: 0 0 8px; }
+.hup { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.hup-log { font-size: 13px; color: var(--muted); margin-top: 8px; min-height: 42px; }
+@media (prefers-reduced-motion: reduce) { * { transition-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+<div class="tabs" id="tabs"></div>
+<svg id="svg" viewBox="0 0 960 400"></svg>
+<div class="info" id="info"></div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const NS = 'http://www.w3.org/2000/svg';
+  const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, RM ? 0 : ms));
+  function S(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs || {}) { if (k === 'text') e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]); }
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  // 按字符估算宽度：中文约 11.5，其余约 6.8（11.5px 字号）
+  const textW = (s) => Array.from(s).reduce((w, ch) => w + (ch.codePointAt(0) > 0x2e80 ? 11.5 : 6.8), 0);
+
+  const SC = [
+    { id: 'direct', tab: 'Ghostty → zsh',
+      nodes: [
+        { id: 'g', x: 40, y: 155, w: 190, h: 90, k: 'emu', t: 'Ghostty', s: '终端模拟器', vt: 'VT 解析 ①' },
+        { id: 'p1', x: 320, y: 165, w: 160, h: 70, k: 'pty', t: 'pty', s: '/dev/ttys003' },
+        { id: 'zsh', x: 590, y: 90, w: 170, h: 64, k: 'prog', t: 'zsh', s: '会话首进程' },
+        { id: 'vim', x: 590, y: 250, w: 170, h: 64, k: 'prog', t: 'vim', s: '前台进程组' },
+      ],
+      edges: [
+        { a: 'g', b: 'p1', d: 'M230,200 L320,200', k: 'pty', l: 'master', lx: 275, ly: 190 },
+        { a: 'p1', b: 'zsh', d: 'M480,200 C535,200 535,122 590,122', k: 'pty', l: 'slave', lx: 545, ly: 150 },
+        { a: 'p1', b: 'vim', d: 'M480,200 C535,200 535,282 590,282', k: 'pty' },
+      ],
+      facts: { 'pty': '1 对', 'VT 解析': '1 次（Ghostty）', 'TERM': 'xterm-ghostty' },
+      note: '<p>最简单的情况。zsh 和 vim 共用同一个 slave 作为 fd 0/1/2，谁接收键盘输入、谁收 Ctrl-C，由这个终端的前台进程组决定。</p><p>窗口关闭时 Ghostty 关掉 master，内核给会话首进程 zsh 发 SIGHUP，zsh 再转发给它启动的程序。</p>',
+      hup: [['g', 'closed', '窗口关闭'], ['p1', 'dead', 'master 被关闭'], ['zsh', 'dead', 'SIGHUP → 退出'], ['vim', 'dead', 'SIGHUP → 退出']] },
+    { id: 'tmux', tab: 'Ghostty → tmux',
+      nodes: [
+        { id: 'g', x: 20, y: 40, w: 160, h: 84, k: 'emu', t: 'Ghostty', s: '外层终端', vt: 'VT 解析 ②' },
+        { id: 'p1', x: 230, y: 47, w: 130, h: 70, k: 'pty', t: 'pty #1', s: 'ttys003' },
+        { id: 'cl', x: 410, y: 47, w: 150, h: 70, k: 'prog', t: 'tmux client', s: 'tmux attach' },
+        { id: 'sv', x: 390, y: 215, w: 190, h: 100, k: 'mux', t: 'tmux server', s: '持有 pane 的 master', vt: 'VT 解析 ①' },
+        { id: 'p2', x: 630, y: 160, w: 120, h: 64, k: 'pty', t: 'pty #2', s: 'ttys008' },
+        { id: 'p3', x: 630, y: 290, w: 120, h: 64, k: 'pty', t: 'pty #3', s: 'ttys009' },
+        { id: 'zsh', x: 800, y: 160, w: 140, h: 64, k: 'prog', t: 'zsh', s: 'pane 1' },
+        { id: 'vim', x: 800, y: 290, w: 140, h: 64, k: 'prog', t: 'vim', s: 'pane 2' },
+      ],
+      edges: [
+        { a: 'g', b: 'p1', d: 'M180,82 L230,82', k: 'pty' },
+        { a: 'p1', b: 'cl', d: 'M360,82 L410,82', k: 'pty' },
+        { a: 'cl', b: 'sv', d: 'M485,117 L485,215', k: 'sock', l: 'unix socket', lx: 532, ly: 170 },
+        { a: 'sv', b: 'p1', d: 'M390,250 C300,250 295,190 295,117', k: 'fd', l: '传来的 tty fd', lx: 250, ly: 205, flow: 'fwd' },
+        { a: 'sv', b: 'p2', d: 'M580,245 C605,245 605,192 630,192', k: 'pty' },
+        { a: 'sv', b: 'p3', d: 'M580,290 C605,290 605,322 630,322', k: 'pty' },
+        { a: 'p2', b: 'zsh', d: 'M750,192 L800,192', k: 'pty' },
+        { a: 'p3', b: 'vim', d: 'M750,322 L800,322', k: 'pty' },
+      ],
+      facts: { 'pty': '3 对', 'VT 解析': '2 次（tmux 一次，Ghostty 再一次）', 'TERM': 'Ghostty 里是 xterm-ghostty，pane 里是 tmux-256color' },
+      note: '<p>tmux server 给每个 pane 开一对 pty，用自己的解析器把输出解析进 pane 的屏幕，再把整屏重新编码成转义序列，写给外层终端。</p><p>用 <code>lsof</code> 看，client attach 之后，server 进程直接持有 client 所在终端的设备文件。client 通过 unix socket 把自己的 tty 文件描述符传给了 server，橙色虚线就是这条路。</p><p>颜色、图片、剪贴板、kitty 键盘协议在 tmux 里出问题，大多和这次“解析后重新编码”有关。</p>',
+      hup: [['g', 'closed', '窗口关闭'], ['p1', 'dead', 'master 被关闭'], ['cl', 'dead', 'SIGHUP → 退出'], ['sv', 'alive', '不受影响'], ['p2', 'alive', ''], ['p3', 'alive', ''], ['zsh', 'alive', '继续运行'], ['vim', 'alive', '继续运行']] },
+    { id: 'herdr', tab: 'Ghostty → herdr',
+      nodes: [
+        { id: 'g', x: 20, y: 40, w: 160, h: 84, k: 'emu', t: 'Ghostty', s: '外层终端', vt: 'VT 解析 ②' },
+        { id: 'p1', x: 230, y: 47, w: 130, h: 70, k: 'pty', t: 'pty #1', s: 'ttys003' },
+        { id: 'cl', x: 410, y: 47, w: 150, h: 70, k: 'prog', t: 'herdr client', s: 'ratatui 绘制界面' },
+        { id: 'sv', x: 390, y: 215, w: 190, h: 100, k: 'mux', t: 'herdr server', s: 'portable-pty', vt: 'libghostty-vt ①' },
+        { id: 'api', x: 150, y: 245, w: 170, h: 70, k: 'user', t: 'CLI / 其他 agent', s: 'herdr.sock' },
+        { id: 'p2', x: 630, y: 160, w: 120, h: 64, k: 'pty', t: 'pty #2', s: 'pane 1' },
+        { id: 'p3', x: 630, y: 290, w: 120, h: 64, k: 'pty', t: 'pty #3', s: 'pane 2' },
+        { id: 'a1', x: 800, y: 160, w: 140, h: 64, k: 'prog', t: 'claude', s: 'blocked', badge: '#de6262' },
+        { id: 'a2', x: 800, y: 290, w: 140, h: 64, k: 'prog', t: 'pi', s: 'working', badge: '#f0ac54' },
+      ],
+      edges: [
+        { a: 'g', b: 'p1', d: 'M180,82 L230,82', k: 'pty' },
+        { a: 'p1', b: 'cl', d: 'M360,82 L410,82', k: 'pty' },
+        { a: 'cl', b: 'sv', d: 'M485,117 L485,215', k: 'sock', l: 'socket', lx: 520, ly: 170 },
+        { a: 'api', b: 'sv', d: 'M320,280 L390,280', k: 'sock', l: 'API', lx: 355, ly: 270 },
+        { a: 'sv', b: 'p2', d: 'M580,245 C605,245 605,192 630,192', k: 'pty' },
+        { a: 'sv', b: 'p3', d: 'M580,290 C605,290 605,322 630,322', k: 'pty' },
+        { a: 'p2', b: 'a1', d: 'M750,192 L800,192', k: 'pty' },
+        { a: 'p3', b: 'a2', d: 'M750,322 L800,322', k: 'pty' },
+      ],
+      facts: { 'pty': '3 对', 'VT 解析': '2 次（herdr 用 libghostty-vt 一次，Ghostty 再一次）', '环境变量': 'pane 里有 HERDR_ENV=1' },
+      note: '<p>结构和 tmux 一样：server 持有 pane 的 pty，client 负责显示。不同的是 pane 的屏幕内容由 libghostty-vt 维护，server 会读 pane 屏幕底部判断 agent 的状态，并通过 <code>herdr.sock</code> 提供 API，比如 <code>herdr pane read</code>、<code>herdr agent wait</code>。</p><p>server 重启后进程就没了，但 herdr 可以借 agent 自己的恢复命令把会话接上，比如 <code>pi --session &lt;id&gt;</code>。</p>',
+      hup: [['g', 'closed', '窗口关闭'], ['p1', 'dead', 'master 被关闭'], ['cl', 'dead', 'SIGHUP → 退出'], ['sv', 'alive', '不受影响'], ['p2', 'alive', ''], ['p3', 'alive', ''], ['a1', 'alive', '继续运行'], ['a2', 'alive', '继续运行']] },
+    { id: 'ssh', tab: 'ssh 远程',
+      region: { x: 648, y: 128, w: 300, h: 250, l: '远端机器' },
+      nodes: [
+        { id: 'g', x: 20, y: 150, w: 150, h: 84, k: 'emu', t: 'Ghostty', s: '本地', vt: 'VT 解析 ①' },
+        { id: 'p1', x: 205, y: 157, w: 110, h: 70, k: 'pty', t: 'pty #1', s: '本地' },
+        { id: 'ssh', x: 350, y: 157, w: 110, h: 70, k: 'prog', t: 'ssh', s: '客户端' },
+        { id: 'net', x: 495, y: 157, w: 120, h: 70, k: 'net', t: '网络', s: 'TCP + 加密' },
+        { id: 'sshd', x: 670, y: 157, w: 120, h: 70, k: 'prog', t: 'sshd', s: '远端' },
+        { id: 'p2', x: 670, y: 290, w: 120, h: 64, k: 'pty', t: 'pty #2', s: '/dev/pts/2' },
+        { id: 'rz', x: 815, y: 290, w: 120, h: 64, k: 'prog', t: 'zsh', s: '远端' },
+      ],
+      edges: [
+        { a: 'g', b: 'p1', d: 'M170,192 L205,192', k: 'pty' },
+        { a: 'p1', b: 'ssh', d: 'M315,192 L350,192', k: 'pty' },
+        { a: 'ssh', b: 'net', d: 'M460,192 L495,192', k: 'net' },
+        { a: 'net', b: 'sshd', d: 'M615,192 L670,192', k: 'net' },
+        { a: 'sshd', b: 'p2', d: 'M730,227 L730,290', k: 'pty', l: 'master', lx: 762, ly: 262 },
+        { a: 'p2', b: 'rz', d: 'M790,322 L815,322', k: 'pty' },
+      ],
+      facts: { 'pty': '2 对（ssh host cmd 时远端不分配）', 'VT 解析': '1 次（ssh、sshd 只转发字节）', 'TERM': '本地的值被带到远端' },
+      note: '<p>有两对 pty，但转义序列只在本地的 Ghostty 解析一次。ssh 客户端把本地 pty 切到 raw 模式，按键原样发到远端，由远端的 line discipline 处理回显和 Ctrl-C。</p><p><code>ssh host cmd</code> 默认不在远端分配 pty，所以远端命令的输出不带颜色、也不能交互；<code>ssh -t</code> 会强制分配。</p><p>断线后 sshd 关闭远端的 master，远端 shell 收到 SIGHUP。很多人登录服务器后先开 tmux，就是为了这个。</p>',
+      hup: [['g', 'closed', '窗口关闭'], ['p1', 'dead', ''], ['ssh', 'dead', 'SIGHUP → 退出'], ['net', 'dead', '连接断开'], ['sshd', 'dead', '关闭远端 master'], ['p2', 'dead', ''], ['rz', 'dead', 'SIGHUP → 退出']] },
+    { id: 'subagent', tab: 'pi-subagent',
+      nodes: [
+        { id: 'g', x: 20, y: 40, w: 150, h: 80, k: 'emu', t: 'Ghostty', s: '', vt: 'VT 解析' },
+        { id: 'p1', x: 205, y: 45, w: 110, h: 70, k: 'pty', t: 'pty #1', s: '' },
+        { id: 'par', x: 350, y: 40, w: 150, h: 80, k: 'prog', t: '父 pi', s: 'TUI' },
+        { id: 'you', x: 595, y: 40, w: 170, h: 70, k: 'user', t: '你（可选）', s: 'tmux attach' },
+        { id: 'cli', x: 350, y: 195, w: 150, h: 70, k: 'prog', t: 'subagent CLI', s: '命令结束就退出' },
+        { id: 'sv', x: 595, y: 185, w: 170, h: 90, k: 'mux', t: 'tmux server', s: '没有 client', vt: 'VT 解析（没人看）' },
+        { id: 'p2', x: 805, y: 192, w: 135, h: 70, k: 'pty', t: 'pty #2', s: '120×40' },
+        { id: 'ch', x: 805, y: 315, w: 135, h: 64, k: 'prog', t: '子 pi', s: '--session …jsonl' },
+        { id: 'fs', x: 350, y: 315, w: 240, h: 64, k: 'file', t: 'runDir/', s: 'inbox/*.json · session.jsonl' },
+      ],
+      edges: [
+        { a: 'g', b: 'p1', d: 'M170,80 L205,80', k: 'pty' },
+        { a: 'p1', b: 'par', d: 'M315,80 L350,80', k: 'pty' },
+        { a: 'par', b: 'cli', d: 'M425,120 L425,195', k: 'pipe', l: 'bash 工具（管道）', lx: 435, ly: 160, anchor: 'start' },
+        { a: 'cli', b: 'sv', d: 'M500,230 L595,230', k: 'sock', l: 'new-session -d', lx: 548, ly: 220, flow: 'fwd' },
+        { a: 'sv', b: 'p2', d: 'M765,227 L805,227', k: 'pty' },
+        { a: 'p2', b: 'ch', d: 'M872,262 L872,315', k: 'pty' },
+        { a: 'cli', b: 'fs', d: 'M425,265 L425,315', k: 'file', l: '写 inbox · 读 JSONL', lx: 435, ly: 295, anchor: 'start' },
+        { a: 'fs', b: 'ch', d: 'M590,347 L805,347', k: 'file', l: '250ms 轮询 · 写 JSONL', lx: 698, ly: 337 },
+        { a: 'you', b: 'sv', d: 'M680,110 L680,185', k: 'fd', l: 'attach', lx: 690, ly: 152, anchor: 'start' },
+      ],
+      facts: { 'pty': '2 对', 'VT 解析': '父 pi 在 Ghostty 里；子 pi 在 tmux 的屏幕里，没人看', '控制通道': '文件：inbox/*.json 和 session.jsonl' },
+      note: '<p>tmux 在这里只提供三样东西：一个 pty、和父进程分开的生命周期、一个让人 attach 进去的入口。消息和结果都走运行目录里的文件。</p><p>窗口关闭时父 pi 收到 SIGHUP。tmux server 是独立的守护进程，子 pi 在 tmux 这一层不受影响。不过父会话正常退出时，pi-subagent 会主动把子 agent 标成 <code>suspended</code> 再 <code>kill-session</code>，下次恢复父会话时用同一个 <code>session.jsonl</code> 重新拉起来，历史不丢。</p>',
+      hup: [['g', 'closed', '窗口关闭'], ['p1', 'dead', ''], ['par', 'dead', 'SIGHUP → 退出'], ['sv', 'alive', '独立守护进程'], ['p2', 'alive', ''], ['ch', 'suspend', '可能被父 pi 挂起']] },
+    { id: 'pipe', tab: 'agent 的 Bash 工具',
+      nodes: [
+        { id: 'app', x: 30, y: 155, w: 200, h: 90, k: 'prog', t: 'Claude Code', s: '以它为例' },
+        { id: 'pp', x: 300, y: 165, w: 170, h: 70, k: 'file', t: '3 根管道', s: 'stdin · stdout · stderr' },
+        { id: 'z', x: 540, y: 155, w: 180, h: 90, k: 'prog', t: 'zsh -c "…"', s: 'TTY ??' },
+        { id: 'o', x: 790, y: 165, w: 150, h: 70, k: 'user', t: 'tty 的输出', s: 'not a tty' },
+      ],
+      edges: [
+        { a: 'app', b: 'pp', d: 'M230,200 L300,200', k: 'pipe' },
+        { a: 'pp', b: 'z', d: 'M470,200 L540,200', k: 'pipe' },
+        { a: 'z', b: 'o', d: 'M720,200 L790,200', k: 'pipe', flow: 'fwd' },
+      ],
+      facts: { 'pty': '0 对', 'VT 解析': '0 次', 'isatty': 'False' },
+      note: '<p>Claude Code 的 Bash 工具用管道运行命令。在里面执行 <code>tty</code>，输出是 <code>not a tty</code>；用 <code>ps</code> 看，这个 zsh 的 TTY 一栏是 <code>??</code>，它没有控制终端。</p><p>结果是 <code>ls</code> 只输出单列、不带颜色，<code>git log</code> 不进分页器，vim、htop 这类要终端的程序没法正常运行。需要终端时可以套一层 <code>script</code>，或者像 pi-subagent 那样借 tmux 开一个 pty。</p>',
+      hup: null },
+  ];
+  const svg = $('#svg'), info = $('#info');
+  let cur = SC[0], busy = false, done = false;
+  SC.forEach((sc, i) => {
+    const b = document.createElement('button'); b.className = 'btn' + (i === 0 ? ' on' : ''); b.textContent = sc.tab;
+    b.onclick = () => { $$('#tabs .btn').forEach((x) => x.classList.remove('on')); b.classList.add('on'); cur = sc; draw(); };
+    $('#tabs').appendChild(b);
+  });
+  function draw() {
+    done = false;
+    svg.innerHTML = '';
+    if (cur.region) {
+      const g = S('g', { class: 'region' }, svg);
+      S('rect', { x: cur.region.x, y: cur.region.y, width: cur.region.w, height: cur.region.h, rx: 14 }, g);
+      S('text', { x: cur.region.x + 12, y: cur.region.y + cur.region.h - 10, text: cur.region.l }, g);
+    }
+    cur.edges.forEach((e, i) => {
+      const g = S('g', { class: `te k-${e.k}`, 'data-a': e.a, 'data-b': e.b }, svg);
+      const pid = `te-${cur.id}-${i}`;
+      S('path', { d: e.d, id: pid }, g);
+      if (!RM) {
+        const dur = (2.2 + (i % 3) * 0.35) + 's';
+        const c1 = S('circle', { r: 4 }, g);
+        const m1 = S('animateMotion', { dur, repeatCount: 'indefinite' }, c1); S('mpath', { href: '#' + pid }, m1);
+        if (e.flow !== 'fwd') {
+          const c2 = S('circle', { r: 4 }, g);
+          const m2 = S('animateMotion', { dur, repeatCount: 'indefinite', keyPoints: '1;0', keyTimes: '0;1', calcMode: 'linear', begin: '-1.1s' }, c2);
+          S('mpath', { href: '#' + pid }, m2);
+        }
+      }
+      if (e.l) S('text', { x: e.lx, y: e.ly, 'text-anchor': e.anchor || 'middle', text: e.l }, g);
+    });
+    cur.nodes.forEach((n) => {
+      const g = S('g', { class: `tn k-${n.k}`, id: `tn-${n.id}` }, svg);
+      S('rect', { class: 'box', x: n.x, y: n.y, width: n.w, height: n.h, rx: 10 }, g);
+      const cy = n.y + n.h / 2;
+      S('text', { class: 't1', x: n.x + n.w / 2, y: n.s ? cy - 3 : cy + 5, 'text-anchor': 'middle', text: n.t }, g);
+      if (n.s) S('text', { class: 't2', x: n.x + n.w / 2, y: cy + 16, 'text-anchor': 'middle', text: n.s }, g);
+      if (n.vt) {
+        const vg = S('g', { class: 'vt' }, g);
+        const w = textW(n.vt) + 18, right = n.x + n.w + 8;
+        S('rect', { x: right - w, y: n.y - 11, width: w, height: 21, rx: 10.5 }, vg);
+        S('text', { x: right - w / 2, y: n.y + 3.5, 'text-anchor': 'middle', text: n.vt }, vg);
+      }
+      if (n.badge) { const bg = S('g', { class: 'badge' }, g); S('circle', { cx: n.x + 16, cy: n.y + 16, r: 6, fill: n.badge }, bg); }
+      S('text', { class: 'stat', x: n.x + n.w / 2, y: n.y + n.h + 17, 'text-anchor': 'middle', text: '' }, g);
+    });
+    const facts = Object.entries(cur.facts).map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+    info.innerHTML = `<div><h3>${cur.tab}</h3><dl class="facts">${facts}</dl>` +
+      `<div class="hup"><button class="btn" id="hup" ${cur.hup ? '' : 'disabled'}>${cur.hup ? '✕ 关闭外层终端窗口' : '这个场景没有终端窗口'}</button><div class="hup-log" id="hup-log"></div></div></div>` +
+      `<div class="note">${cur.note}</div>`;
+    $('#hup').onclick = () => done ? draw() : hup();
+  }
+  async function hup() {
+    if (busy || !cur.hup) return;
+    busy = true;
+    const sc = cur, btn = $('#hup'), logEl = $('#hup-log');
+    btn.disabled = true;
+    const state = {};
+    const bad = (s) => s === 'dead' || s === 'closed';
+    for (const [id, st, msg] of sc.hup) {
+      if (cur !== sc) break;
+      state[id] = st;
+      const g = $(`#tn-${id}`);
+      g.classList.add(st);
+      g.querySelector('.stat').textContent = msg;
+      $$('.te', svg).forEach((e) => { if (bad(state[e.dataset.a]) || bad(state[e.dataset.b])) e.classList.add('cut'); });
+      if (msg) logEl.textContent = (st === 'alive' ? '✓ ' : st === 'suspend' ? '◐ ' : '✕ ') + `${g.querySelector('.t1').textContent}：${msg}`;
+      await sleep(520);
+    }
+    if (cur === sc) {
+      const survived = sc.hup.some((h) => h[1] === 'alive' || h[1] === 'suspend');
+      logEl.textContent = survived ? '外层窗口关掉以后，持有 pane master 的守护进程和它下面的程序都还在。' : '这条链上没有哪个进程独立持有 master，SIGHUP 一路传到了底。';
+      btn.disabled = false; btn.textContent = '⟲ 重置'; done = true;
+    }
+    busy = false;
+  }
+  draw();
+})();
+</script>
+</body>
+</html>

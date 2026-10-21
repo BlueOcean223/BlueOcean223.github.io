@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>pi-subagent 一次完整的使用过程</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f; --faint-2: #b0aea5;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --hair: rgba(20,20,19,.1);
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 14px; font: 500 12.5px var(--font-sans); cursor: pointer; transition: background .2s, border-color .2s; white-space: nowrap; }
+.btn:hover { background: var(--bg-soft); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn:disabled:hover { background: var(--bg); }
+.wrap { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; align-items: start; }
+.wrap > * { min-width: 0; }
+@media (max-width: 700px) { .wrap { grid-template-columns: 1fr; } }
+svg { width: 100%; height: auto; display: block; background: var(--bg); border-radius: 10px; }
+.ll rect { fill: var(--bg-soft); }
+.ll text { fill: var(--text); font: 600 13.5px var(--font-sans); }
+.ll line { stroke: var(--border-strong); stroke-dasharray: 3 5; }
+.ar line { stroke: var(--faint-2); stroke-width: 1.5; }
+.ar text { fill: var(--muted); font: 12px var(--font-mono); paint-order: stroke; stroke: var(--bg); stroke-width: 5px; }
+.ar.cur line { stroke: var(--accent); stroke-width: 2.2; }
+.ar.cur text { fill: var(--text); font-weight: 600; }
+.ar.future { display: none; }
+.ar.cur line.draw { stroke-dasharray: var(--len); stroke-dashoffset: var(--len); animation: draw .55s ease-out forwards; }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+/* 各步的文字和代码长短不一，固定住面板高度，切换步骤时 iframe 不会忽高忽低 */
+.panel { display: flex; flex-direction: column; min-height: 447px; }
+.stepno { font: 600 12px var(--font-sans); color: var(--accent); }
+.panel h3 { margin: 2px 0 6px; font: 600 16px/1.4 var(--font-sans); }
+.panel p { font-size: 13.5px; line-height: 1.7; margin: 0 0 10px; color: var(--text-soft); }
+pre { background: var(--bg); border: 1px solid var(--hair); border-radius: 8px; padding: 10px 12px; font: 11.5px/1.6 var(--font-mono); color: var(--text-soft); overflow-x: auto; margin: 0; white-space: pre; overscroll-behavior-x: contain; }
+pre .cm { color: var(--faint); }
+.ctrl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: auto; padding-top: 12px; }
+.dots { display: flex; gap: 5px; margin-left: auto; }
+.dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); cursor: pointer; }
+.dots i.on { background: var(--accent); }
+@media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <svg id="svg"></svg>
+  <div class="panel">
+    <div class="stepno" id="no"></div>
+    <h3 id="title"></h3>
+    <p id="text"></p>
+    <pre id="code"></pre>
+    <div class="ctrl">
+      <button class="btn" id="prev">◀</button>
+      <button class="btn" id="next">下一步 ▶</button>
+      <button class="btn" id="play">▶ 自动</button>
+      <div class="dots" id="dots"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 代码片段放在 text/plain 里，免得在 JS 字符串里转义反引号和尖括号 -->
+<script type="text/plain" id="code-spawn"># 父 pi 的 bash 工具执行（走管道，不需要终端）
+subagent spawn --name review --prompt "Review the current diff independently"
+
+# CLI 的输出（subagent.ts）
+Spawned review (a1b2c3)
+State: busy
+Attach: tmux attach -t pi-subagent-a1b2c3</script>
+<script type="text/plain" id="code-rundir">// subagent.ts · spawnSubagent()
+const sessionFile = join(runDir, "session.jsonl");
+const tmuxSession = `pi-subagent-${handle}`;
+mkdirSync(inboxDir(runDir), { recursive: true, mode: 0o700 });
+// 随后写入 metadata：provider、model、thinking、tmuxSession、sessionFile …</script>
+<script type="text/plain" id="code-launch">// shared.ts · launchRun()
+spawnSync("tmux", [
+  "new-session", "-d",            // detached：不需要任何 client
+  "-s", metadata.tmuxSession,     // pi-subagent-a1b2c3
+  "-x", "120", "-y", "40",        // 没有 client 时 pane 的尺寸
+  "-c", metadata.cwd,
+  "--", "env", `PI_SUBAGENT_RUN_DIR=${metadata.runDir}`,
+  launcher, "--session", metadata.sessionFile,
+  "--provider", metadata.provider,
+  "--model", metadata.model,
+  "--thinking", metadata.thinking,
+  ...
+]);</script>
+<script type="text/plain" id="code-pty">// tmux server 内部（示意，不是 pi-subagent 的代码）
+master, slave = openpty()          // 向内核要一对 pty
+ioctl(master, TIOCSWINSZ, 120x40)  // 设置窗口大小
+pid = fork()
+// 子进程：
+setsid()                           // 开一个新会话
+ioctl(slave, TIOCSCTTY)            // slave 成为控制终端
+dup2(slave → 0, 1, 2)
+exec("env", "PI_SUBAGENT_RUN_DIR=…", "pi", "--session", …)</script>
+<script type="text/plain" id="code-jsonl"># ~/.pi/agent/subagents/a1b2c3/session.jsonl（每行一条记录）
+{"type":"message","id":"…","parentId":"…","message":{"role":"user",…}}
+{"type":"message","id":"…","parentId":"…","message":{"role":"assistant",…}}
+…</script>
+<script type="text/plain" id="code-send">// subagent.ts · send
+const payload: InboxMessage = {
+  message,
+  delivery: followUp ? "followUp" : "auto",
+};
+// 写到 <runDir>/inbox/<时间戳>.json</script>
+<script type="text/plain" id="code-inbox">// index.ts · 在子进程里（PI_SUBAGENT_RUN_DIR 存在时）
+timer = setInterval(() => void processInbox(), 250);
+
+// processInbox() 对每个 inbox/*.json：
+if (currentContext.isIdle()) {
+  pi.sendUserMessage(payload.message);    // 空闲：开始新一轮
+} else {
+  pi.sendUserMessage(payload.message, {
+    deliverAs: payload.delivery === "followUp" ? "followUp" : "steer",
+  });                                      // 忙：插话或排队
+}
+unlinkSync(path);</script>
+<script type="text/plain" id="code-attach">// index.ts · /subagent 命令
+if (process.env.TMUX) {
+  // 父 pi 本身就在 tmux 里：把当前 tmux client 切过去
+  spawn("tmux", ["switch-client", "-t", run.tmuxSession], { stdio: "inherit" });
+  return;
+}
+tui.stop();                                // 先让出终端
+spawn("tmux", ["attach-session", "-t", run.tmuxSession], { stdio: "inherit" });
+// detach 之后：
+tui.start();
+tui.requestRender(true);</script>
+<script type="text/plain" id="code-wait">// shared.ts · readLatestAssistant()
+for (const line of content.split("\n")) {
+  try {
+    const value = JSON.parse(line);
+    if (isSessionEntry(value)) entries.push(value);
+  } catch {
+    // The final JSONL record may still be in the process of being appended.
+  }
+}
+return activeBranch(entries).findLast(isAssistantEntry)?.message;</script>
+<script type="text/plain" id="code-stop">// subagent.ts · stop
+spawnSync("tmux", ["kill-session", "-t", metadata.tmuxSession], { stdio: "ignore" });
+// tmux 关闭 pane 的 master → 子 pi 收到 SIGHUP
+// 随后删除运行目录
+
+// index.ts · 父会话退出（session_shutdown，不是 reload）时：
+updateMetadata(run.runDir, { suspended: true });
+spawnSync("tmux", ["kill-session", "-t", run.tmuxSession], { stdio: "ignore" });
+// 下次 session_start 时用同一个 session.jsonl 重新 launchRun()</script>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const NS = 'http://www.w3.org/2000/svg';
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function S(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs || {}) { if (k === 'text') e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]); }
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+  const W = 520;
+  const LANES = [['parent', 42, '父 pi'], ['cli', 130, 'CLI'], ['tmux', 220, 'tmux'], ['child', 310, '子 pi'], ['fs', 402, 'runDir'], ['you', 484, '你']];
+  const LX = Object.fromEntries(LANES.map(([id, x]) => [id, x]));
+  const STEPS = [
+    { arrows: [['parent', 'cli', 'bash：subagent spawn …']], title: '父 pi 用 bash 工具调用 CLI',
+      text: '父 pi 的模型决定把任务交出去，用 bash 工具执行 subagent spawn。bash 工具的子进程接的是管道，这一步不涉及终端。', code: 'code-spawn' },
+    { arrows: [['cli', 'fs', 'mkdir inbox/ · 写 metadata']], title: '准备运行目录',
+      text: '生成一个随机的 handle，比如 a1b2c3，建好运行目录和 inbox/，写入 metadata：模型、tmux 会话名、session 文件路径等。', code: 'code-rundir' },
+    { arrows: [['cli', 'tmux', 'new-session -d -x 120 -y 40']], title: '让 tmux 开一个没人看的终端',
+      text: '-d 表示建好以后不 attach，不需要任何 client；-x 120 -y 40 是这时 pane 的尺寸。环境变量 PI_SUBAGENT_RUN_DIR 告诉子 pi 里的扩展：你是子进程，运行目录在这里。', code: 'code-launch' },
+    { arrows: [['tmux', 'child', 'openpty · fork · exec pi']], title: '子 pi 在 pty 的 slave 上启动',
+      text: 'tmux server 打开一对 pty，fork 出子进程，把 slave 设成它的控制终端和 fd 0/1/2，再 exec pi。pi 读到 120×40 的窗口，进入 raw 模式开始画界面。tmux 照常把这些输出解析进屏幕，虽然没人在看。', code: 'code-pty' },
+    { arrows: [['child', 'fs', '追加 session.jsonl']], title: '子 pi 干活，记录写进 JSONL',
+      text: '子 pi 和普通的 pi 会话一样，把每条消息追加到自己的 session.jsonl。这份文件是会话记录，也是父进程取结果的地方。', code: 'code-jsonl' },
+    { arrows: [['parent', 'cli', 'subagent send a1b2c3 "…"'], ['cli', 'fs', '写 inbox/<时间戳>.json']], title: '发消息：写文件，不碰终端',
+      text: 'send 不调用 tmux send-keys，而是在 inbox/ 里放一个 JSON 文件。加了 --follow-up 时 delivery 是 followUp，否则是 auto。', code: 'code-send' },
+    { arrows: [['fs', 'child', '每 250ms 轮询 inbox']], title: '子 pi 里的扩展取走消息',
+      text: '同一个扩展在子进程里每 250ms 扫一遍 inbox。子 pi 空闲时，消息作为新一轮的输入；忙的时候作为 steer（插话）或 follow-up（排队）。处理完就删掉文件。', code: 'code-inbox' },
+    { arrows: [['you', 'tmux', '/subagent → attach-session'], ['tmux', 'you', '子 pi 的画面写到你的终端']], title: '人想看一眼',
+      text: '在父 pi 里执行 /subagent 选中一个子 agent。父 pi 本身在 tmux 里时，用 switch-client 切过去；否则先停掉自己的界面让出终端，再 attach-session，detach 回来以后恢复。', code: 'code-attach' },
+    { arrows: [['parent', 'cli', 'subagent wait a1b2c3'], ['cli', 'fs', '读最后一条 assistant']], title: '等结果：读 JSONL，不读屏幕',
+      text: 'wait 读的是 session.jsonl，沿当前分支找到最后一条 assistant 消息。最后一行可能还没写完，解析失败的行会跳过。', code: 'code-wait' },
+    { arrows: [['parent', 'cli', 'subagent stop a1b2c3'], ['cli', 'tmux', 'tmux kill-session'], ['tmux', 'child', '关闭 master → SIGHUP']], title: '停止',
+      text: 'kill-session 让 tmux 关闭 pane 的 master，子 pi 收到 SIGHUP 退出，CLI 再删掉运行目录。父会话退出时走另一条路：先标记 suspended 再 kill-session，留着记录以便恢复。', code: 'code-stop' },
+  ];
+  const svg = $('#svg');
+  const ROW = 30, TOP = 78;
+  const arrows = []; STEPS.forEach((s, si) => s.arrows.forEach((a) => arrows.push({ si, a })));
+  const H = TOP + arrows.length * ROW + 10;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const defs = S('defs', null, svg);
+  [['sq', '#b0aea5'], ['sq2', '#d97757']].forEach(([id, c]) => {
+    const m = S('marker', { id, viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, defs);
+    S('path', { d: 'M0,0 L10,5 L0,10 z', fill: c }, m);
+  });
+  LANES.forEach(([id, x, label]) => {
+    const g = S('g', { class: 'll' }, svg);
+    S('line', { x1: x, y1: 48, x2: x, y2: H - 6 }, g);
+    const w = Math.max(56, Array.from(label).reduce((s, ch) => s + (ch.codePointAt(0) > 0x2e80 ? 14 : 8), 0) + 20);
+    S('rect', { x: x - w / 2, y: 12, width: w, height: 32, rx: 8 }, g);
+    S('text', { x, y: 33, 'text-anchor': 'middle', text: label }, g);
+  });
+  const arrowEls = arrows.map(({ si, a: [from, to, label] }, i) => {
+    const y = TOP + i * ROW, x1 = LX[from], x2 = LX[to], dir = Math.sign(x2 - x1);
+    const g = S('g', { class: 'ar future', 'data-si': si }, svg);
+    const ln = S('line', { x1: x1 + dir * 4, y1: y, x2: x2 - dir * 6, y2: y, 'marker-end': 'url(#sq)' }, g);
+    ln.style.setProperty('--len', Math.abs(x2 - x1));
+    // 箭头一开始是 display:none，量不到宽度，按字符估算：中文约 12，其余约 7.2
+    const tw = Array.from(label).reduce((w, ch) => w + (ch.codePointAt(0) > 0x2e80 ? 12 : 7.2), 0);
+    S('text', { x: Math.min(W - tw / 2 - 4, Math.max(tw / 2 + 4, (x1 + x2) / 2)), y: y - 7, 'text-anchor': 'middle', text: label }, g);
+    return g;
+  });
+  let idx = 0, timer = null;
+  const dots = $('#dots');
+  STEPS.forEach((_, i) => { const d = document.createElement('i'); d.title = `步骤 ${i + 1}`; d.onclick = () => { stopAuto(); show(i); }; dots.appendChild(d); });
+  const codeText = (id) => document.getElementById(id).textContent;
+  function show(i) {
+    idx = Math.max(0, Math.min(STEPS.length - 1, i));
+    arrowEls.forEach((g) => {
+      const si = +g.dataset.si;
+      g.classList.toggle('future', si > idx);
+      g.classList.toggle('cur', si === idx);
+      const ln = g.querySelector('line');
+      ln.setAttribute('marker-end', si === idx ? 'url(#sq2)' : 'url(#sq)');
+      ln.classList.remove('draw');
+      if (si === idx) { void ln.getBoundingClientRect(); ln.classList.add('draw'); }
+    });
+    const s = STEPS[idx];
+    $('#no').textContent = `步骤 ${idx + 1} / ${STEPS.length}`;
+    $('#title').textContent = s.title;
+    $('#text').textContent = s.text;
+    $('#code').innerHTML = esc(codeText(s.code)).replace(/(^|\n)(\s*(?:\/\/|#)[^\n]*)/g, '$1<span class="cm">$2</span>');
+    $('#code').scrollLeft = 0;
+    [...dots.children].forEach((d, j) => d.classList.toggle('on', j === idx));
+    $('#prev').disabled = idx === 0;
+    $('#next').disabled = idx === STEPS.length - 1;
+  }
+  function stopAuto() { clearInterval(timer); timer = null; $('#play').textContent = '▶ 自动'; }
+  $('#prev').onclick = () => { stopAuto(); show(idx - 1); };
+  $('#next').onclick = () => { stopAuto(); show(idx + 1); };
+  $('#play').onclick = () => {
+    if (timer) return stopAuto();
+    if (idx === STEPS.length - 1) show(0);
+    $('#play').textContent = '⏸ 暂停';
+    timer = setInterval(() => { if (idx >= STEPS.length - 1) return stopAuto(); show(idx + 1); }, 3600);
+  };
+  show(0);
+})();
+</script>
+</body>
+</html>

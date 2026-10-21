@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>herdr 怎么判断 pane 里的 agent 在干什么（示意）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --hair: rgba(20,20,19,.1);
+  --sky: #6a9bcc; --poppy: #de6262; --pencil: #f0ac54;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; }
+.label { font: 500 12px var(--font-sans); color: var(--muted); margin: 0 0 6px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 14px; font: 500 12.5px var(--font-sans); cursor: pointer; transition: background .2s, border-color .2s; white-space: nowrap; }
+.btn:hover { background: var(--bg-soft); }
+.btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+
+.win { background: #1d1d22; border-radius: 10px; overflow: hidden; color: #dedcd3; font: 12.5px/20px var(--font-mono); }
+.body { display: grid; grid-template-columns: 190px 1fr; align-items: start; }
+@media (max-width: 640px) { .body { grid-template-columns: 140px 1fr; } }
+.side { border-right: 1px solid #33333a; padding: 4px 0 10px; display: flex; flex-direction: column; align-self: stretch; min-width: 0; }
+.sec { display: flex; justify-content: space-between; padding: 2px 12px; color: #7d7c78; }
+.sec2 { margin-top: auto; padding-top: 14px; }
+#spaces, #agents { margin-top: 6px; }
+.item { position: relative; padding: 2px 12px 2px 28px; cursor: pointer; }
+.item.nil { cursor: default; }
+.item:not(.nil):hover { background: #26262c; }
+.item.sel { background: #2c2c36; }
+.item b { display: block; font-weight: 600; color: #f0eee6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item b .sep { color: #7d7c78; font-weight: 400; }
+.item small { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; color: #8f8e88; }
+.item small .up { color: #8fc27a; }
+.item small em { font-style: normal; font-size: 11px; }
+.gl { position: absolute; left: 11px; top: 2px; font-size: 12px; }
+.gl.working, em.working { color: var(--pencil); }
+.gl.blocked, em.blocked { color: var(--poppy); }
+.gl.blocked { animation: pulse 1.1s infinite; }
+.gl.done, em.done { color: var(--sky); }
+.gl.idle, em.idle { color: #8fc27a; }
+.gl.unknown, .gl.none, em.unknown { color: #7d7c78; }
+@keyframes pulse { 50% { opacity: .3; } }
+.main { min-width: 0; }
+.tabs { display: flex; background: #16161a; height: 24px; line-height: 24px; }
+.tab { min-width: 60px; text-align: center; color: #8f8e88; cursor: pointer; }
+.tab:hover { color: #dedcd3; }
+.tab.on { background: #8db4e8; color: #16161a; font-weight: 600; }
+.tab.add { min-width: 40px; cursor: default; }
+.pane { position: relative; }
+.screen { padding: 6px 0; height: 312px; overflow: hidden; }
+.ln { height: 20px; padding: 0 14px; white-space: pre; overflow: hidden; }
+.ln b { font-weight: 600; color: #f6f4ec; }
+.ln .g { color: #8fc27a; }
+.ln.dim, .ln .dim { color: #8f8e88; }
+.ln.clay { color: var(--accent); }
+.ln.it { font-style: italic; }
+.ln.tool { background: #26402b; }
+.ln.add { color: #93c97f; }
+.ln.del { color: #e38989; }
+.ln.opt { color: #aea2ef; }
+.ln.bar { display: flex; align-items: center; gap: 8px; color: #e27bc8; }
+.ln.bar i { flex: 1; height: 1px; background: #e27bc8; }
+.ln.bar.work i:first-child { flex: 0 0 12px; }
+.cursor { display: inline-block; width: 8px; height: 16px; background: #ece9df; vertical-align: -3px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.region { position: absolute; left: 6px; right: 6px; bottom: 4px; height: 124px; border: 1.5px dashed var(--accent); border-radius: 6px; pointer-events: none; transition: opacity .2s; }
+.region span { position: absolute; right: 10px; top: -10px; background: #1d1d22; color: var(--accent); font: 11px/18px var(--font-sans); padding: 0 6px; }
+.scrollnote { position: absolute; left: 14px; right: 14px; bottom: 12px; background: #2c2c36; border: 1px solid #3d3d46; border-radius: 8px; padding: 8px 12px; font: 13px/1.6 var(--font-sans); color: #ece9df; }
+
+.ctrl { display: grid; grid-template-columns: 1fr 1.15fr; gap: 10px 28px; align-items: start; margin-top: 14px; }
+.ctrl > * { min-width: 0; }
+@media (max-width: 680px) { .ctrl { grid-template-columns: 1fr; } }
+.chk { display: flex; gap: 7px; align-items: flex-start; font-size: 13px; line-height: 1.55; margin: 6px 0; cursor: pointer; color: var(--text-soft); }
+.chk input { margin-top: 3px; accent-color: var(--accent); }
+.chk.off { color: var(--faint); cursor: not-allowed; }
+.chk.off input { cursor: not-allowed; }
+.hint { font-size: 12.5px; color: var(--muted); margin: 8px 0 0; }
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; min-height: 174px; }
+.steps li { padding: 6px 10px; border: 1px solid var(--hair); border-radius: 8px; font-size: 13px; line-height: 1.55; background: var(--bg); transition: .25s; opacity: .35; }
+.steps li.lit { opacity: 1; }
+.steps li.skip { opacity: .3; text-decoration: line-through; }
+.steps li b { font-family: var(--font-mono); font-weight: 500; color: var(--accent-hover); }
+.cap { margin-top: 10px; color: var(--muted); font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+<div class="win" id="win">
+  <div class="body">
+    <aside class="side">
+      <div class="sec"><span>spaces</span></div>
+      <div id="spaces"></div>
+      <div class="sec sec2"><span>new</span><span>menu</span></div>
+      <div class="sec"><span>agents</span><span>grouped</span></div>
+      <div id="agents"></div>
+    </aside>
+    <div class="main">
+      <div class="tabs" id="tabs"></div>
+      <div class="pane" id="pane">
+        <div class="screen" id="screen"></div>
+        <div class="region" id="region"><span>检测读取的区域</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="ctrl">
+  <div>
+    <div class="label">当前 pane 的屏幕内容</div>
+    <div class="row" id="btns"></div>
+    <label class="chk" id="integ-wrap"><input type="checkbox" id="integ"><span id="integ-label"></span></label>
+    <label class="chk"><input type="checkbox" id="scroll"><span>我在这个 pane 里往上滚，看历史输出</span></label>
+    <p class="hint">api-server 的第 2 个 tab 里，pi 会在后台自己跑完，几秒后侧边栏变成蓝色的 done，点进去看过以后变成 idle。各个 pane 的状态按 blocked、working、done、idle 的优先级汇总到 space。</p>
+  </div>
+  <div>
+    <div class="label">检测过程</div>
+    <ol class="steps" id="steps"></ol>
+  </div>
+</div>
+<div class="cap">界面和规则都是示意，照 herdr 0.9 的文档和检测清单简化。项目和对话是虚构的。</div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => [...document.querySelectorAll(s)];
+  const N = 15; // pane 的高度（行）
+  const pad = (ls) => ls.concat(Array.from({ length: Math.max(0, N - ls.length) }, () => ['', ''])).slice(0, N);
+  const SPIN = ['✻', '✶', '✳', '✢', '·', '✢', '✳', '✶'];
+  const RULE = '─'.repeat(240);
+  const B = '<span class="g">⏺</span>';
+  // 每行是 [类名, html]；work / bar / cur 是特殊行
+  const SCREENS = {
+    claude: {
+      working: (s) => [
+        ['', '&gt; 给 /users 接口加上分页参数'],
+        ['', ''],
+        ['', '⏺ 先看一下现在的路由是怎么写的。'],
+        ['', ''],
+        ['', `${B} <b>Read</b>(src/routes/users.ts)`],
+        ['dim', '  ⎿  Read 128 lines'],
+        ['', ''],
+        ['', `${B} <b>Search</b>(pattern: "limit", path: "src")`],
+        ['dim', '  ⎿  Found 3 files'],
+        ['', ''],
+        ['clay', `${SPIN[s % SPIN.length]} Thinking… (${14 + (s >> 2)}s · esc to interrupt)`],
+        ['', ''],
+        ['dim', RULE],
+        ['', '&gt; '],
+        ['dim', '  ⏵⏵ accept edits on (shift+tab to cycle)'],
+      ],
+      blocked: () => [
+        ['', '⏺ 在 handler 里读取 page 和 limit 两个参数。'],
+        ['', ''],
+        ['', `${B} <b>Update</b>(src/routes/users.ts)`],
+        ['dim', '  ⎿  Edit src/routes/users.ts'],
+        ['del', '     - const rows = await db.users.all();'],
+        ['add', '     + const rows = await db.users.page(page, limit);'],
+        ['', ''],
+        ['', ''],
+        ['', ''],
+        ['', ' <b>Do you want to make this edit to users.ts?</b>'],
+        ['opt', ' ❯ 1. Yes'],
+        ['', '   2. Yes, allow all edits during this session'],
+        ['', '   3. No, and tell Claude what to do differently'],
+        ['', ''],
+        ['dim', ' Esc to cancel'],
+      ],
+      idle: () => pad([
+        ['', '⏺ 分页参数加好了：page 默认 1，limit 默认 20、上限 100。'],
+        ['', '  补了两个测试，都通过了。'],
+      ]).slice(0, N - 3).concat([['dim', RULE], ['', '&gt; '], ['dim', '  ? for shortcuts']]),
+    },
+    pi: {
+      working: () => [
+        ['tool', ''],
+        ['tool', '<b>read</b> src/db/pagination.ts'],
+        ['tool', ''],
+        ['', ''],
+        ['it', 'Planning pagination helper'],
+        ['tool', ''],
+        ['tool', '<b>$ npm test -- pagination</b>'],
+        ['tool', ' PASS  test/pagination.test.ts'],
+        ['tool', ''],
+        ['', ''],
+        ['it', 'Planning cursor-based variant'],
+        ['work'],
+        ['cur'],
+        ['bar'],
+        ['dim', '~/work/api-server (main)'],
+      ],
+      idle: () => [
+        ['tool', ''],
+        ['tool', '<b>edit</b> src/db/pagination.ts'],
+        ['tool add', '+ export function byCursor(cursor, limit) {'],
+        ['tool', ''],
+        ['', ''],
+        ['tool', ''],
+        ['tool', '<b>$ npm test -- pagination</b>'],
+        ['tool', ' PASS  test/pagination.test.ts <span class="dim">(6 tests)</span>'],
+        ['tool', ''],
+        ['', ''],
+        ['', '分页 helper 写好了，offset 和 cursor 两种方式都支持。'],
+        ['bar'],
+        ['cur'],
+        ['bar'],
+        ['dim', '~/work/api-server (main)'],
+      ],
+    },
+    codex: {
+      working: (s) => pad([
+        ['', '› 把安装文档里的 brew 命令更新一下'],
+        ['', ''],
+        ['', '• <b>Explored</b>'],
+        ['dim', '  └ Read install.md, README.md'],
+        ['', ''],
+        ['', '• <b>Edited</b> docs/install.md (<span class="g">+3</span> -2)'],
+        ['', ''],
+      ]).slice(0, N - 4).concat([
+        ['clay', `◦ Working (${8 + (s >> 2)}s • esc to interrupt)`],
+        ['', ''],
+        ['', '› '],
+        ['dim', '  ⏎ send   ⌃J newline   ⌃T transcript'],
+      ]),
+      idle: () => pad([
+        ['', '• 安装文档更新好了：brew 命令换成了新的 tap，'],
+        ['', '  另外补上了 Linux 上的安装方式。'],
+      ]).slice(0, N - 3).concat([['', ''], ['', '› '], ['dim', '  100% context left']]),
+    },
+  };
+  const HISTORY = {
+    claude: pad([
+      ['dim', '（往上滚动后看到的较早的输出）'],
+      ['', ''],
+      ['', `${B} <b>Bash</b>(npm test)`],
+      ['dim', '  ⎿  42 passing (1.2s)'],
+      ['', ''],
+      ['', '⏺ 测试都通过了，接下来改路由。'],
+    ]),
+    pi: pad([
+      ['dim', '（往上滚动后看到的较早的输出）'],
+      ['', ''],
+      ['tool', ''],
+      ['tool', '<b>$ npm test</b>'],
+      ['tool', ' 42 passing'],
+      ['tool', ''],
+      ['', ''],
+      ['it', 'Planning route changes'],
+    ]),
+    codex: pad([
+      ['dim', '（往上滚动后看到的较早的输出）'],
+      ['', ''],
+      ['', '• <b>Ran</b> npm run docs:build'],
+      ['dim', '  └ built 24 pages'],
+    ]),
+  };
+  const RULES = {
+    claude: [
+      { st: 'blocked', test: (t) => /Esc to cancel/i.test(t), d: '底部是确认框，有 “Esc to cancel”' },
+      { st: 'working', test: (t) => /esc to interrupt/.test(t), d: '底部有 “esc to interrupt”，它只在干活时出现' },
+      { st: 'idle', test: (t) => /^>\s*$/m.test(t), d: '底部是空的输入框 “&gt;”' },
+    ],
+    pi: [
+      { st: 'working', test: (t) => /Working/.test(t), d: '输入框上沿有 “Working”' },
+    ],
+    codex: [
+      { st: 'working', test: (t) => /esc to interrupt/.test(t), d: '底部有 “esc to interrupt”' },
+    ],
+  };
+  const BTNS = {
+    claude: [['working', '正在干活'], ['blocked', '等待确认'], ['idle', '做完了，等输入']],
+    pi: [['working', '正在干活'], ['idle', '做完了，等输入']],
+    codex: [['working', '正在干活'], ['idle', '做完了，等输入']],
+  };
+  const SPACES = [
+    { name: 'api-server', branch: 'main <span class="up">↑1</span>' },
+    { name: 'docs-site', branch: 'feat/install' },
+    { name: 'notes', branch: 'main' },
+  ];
+  const AG = [
+    { space: 'api-server', tab: 1, type: 'claude', screen: 'working', seen: true, st: 'working', integ: false },
+    { space: 'api-server', tab: 2, type: 'pi', screen: 'working', seen: true, st: 'working', integ: false },
+    { space: 'docs-site', tab: 1, type: 'codex', screen: 'idle', seen: true, st: 'idle', integ: false },
+  ];
+  const GLYPH = { blocked: '●', working: '●', done: '●', idle: '○', unknown: '◌' };
+  const PRI = { blocked: 4, working: 3, done: 2, idle: 1, unknown: 0 };
+  const PI = AG.findIndex((a) => a.type === 'pi');
+  let sel = 0, tick = 0, scrolled = false, piTimer = 0, visible = false;
+
+  const textOf = ([c, h]) => c === 'work' ? '⋮ Working' : (h || '').replace(/<[^>]+>/g, '').replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&');
+  function detect(i) {
+    const a = AG[i];
+    const bottom = SCREENS[a.type][a.screen](tick).slice(-6).map(textOf).join('\n');
+    let raw, rule = null;
+    if (a.integ) raw = a.screen;
+    else {
+      rule = RULES[a.type].find((r) => r.test(bottom)) || null;
+      // 认识的 agent 没有规则命中时，herdr 按 idle 处理
+      raw = rule ? rule.st : 'idle';
+    }
+    return { raw, rule, st: raw === 'idle' && !a.seen ? 'done' : raw };
+  }
+  function update(i, was) {
+    const a = AG[i];
+    if (detect(i).raw === 'idle' && (was === 'working' || was === 'blocked') && i !== sel) a.seen = false;
+    a.st = detect(i).st;
+  }
+  const roll = (sts) => sts.reduce((m, s) => PRI[s] > PRI[m] ? s : m, 'unknown');
+  const glyph = (st) => `<span class="gl ${st}">${GLYPH[st]}</span>`;
+
+  function renderSide() {
+    $('#spaces').innerHTML = SPACES.map((sp) => {
+      const ids = AG.map((a, i) => a.space === sp.name ? i : -1).filter((i) => i >= 0);
+      const g = ids.length ? glyph(roll(ids.map((i) => AG[i].st))) : '<span class="gl none">·</span>';
+      const on = AG[sel].space === sp.name;
+      return `<div class="item${on ? ' sel' : ''}${ids.length ? '' : ' nil'}" data-i="${ids.length ? ids[0] : ''}">${g}<b>${sp.name}</b><small>${sp.branch}</small></div>`;
+    }).join('');
+    $('#agents').innerHTML = AG.map((a, i) =>
+      `<div class="item${i === sel ? ' sel' : ''}" data-i="${i}">${glyph(a.st)}<b>${a.space} <span class="sep">·</span> ${a.tab}</b><small>${a.type}<em class="${a.st}">${a.st}</em></small></div>`).join('');
+    $$('.side .item').forEach((el) => { if (el.dataset.i !== '') el.onclick = () => select(+el.dataset.i); });
+  }
+  function renderTabs() {
+    const sp = AG[sel].space;
+    $('#tabs').innerHTML = AG.map((a, i) => a.space === sp ? `<span class="tab${i === sel ? ' on' : ''}" data-i="${i}">${a.tab}</span>` : '').join('') + '<span class="tab add">+</span>';
+    $$('#tabs .tab[data-i]').forEach((el) => el.onclick = () => select(+el.dataset.i));
+  }
+  function lineHTML([c, h]) {
+    if (c === 'work') return '<div class="ln bar work"><i></i><span>⋮ Working</span><i></i></div>';
+    if (c === 'bar') return '<div class="ln bar"><i></i></div>';
+    if (c === 'cur') return '<div class="ln"><span class="cursor"></span></div>';
+    return `<div class="ln ${c}">${h}</div>`;
+  }
+  function renderPane() {
+    const a = AG[sel];
+    const lines = scrolled ? HISTORY[a.type] : SCREENS[a.type][a.screen](tick);
+    $('#screen').innerHTML = lines.map(lineHTML).join('');
+    $('#region').style.opacity = scrolled ? 0 : a.integ ? .25 : 1;
+    let note = $('#scrollnote');
+    if (scrolled) {
+      if (!note) { note = document.createElement('div'); note.id = 'scrollnote'; note.className = 'scrollnote'; $('#pane').appendChild(note); }
+      note.innerHTML = `你在看历史输出，可 herdr 读的仍然是屏幕最底部，所以状态还是 <b>${a.st}</b>。`;
+    } else if (note) note.remove();
+  }
+  function renderSteps(animate) {
+    const a = AG[sel], r = detect(sel);
+    const items = [
+      `① 看 pane 的前台进程：是 <b>${a.type}</b>${a.integ ? '' : `，选用 ${a.type} 的检测规则`}`,
+      a.integ ? '② 跳过读屏幕' : '② 读屏幕最底部的几行（虚线框），不管你滚到了哪里',
+      a.integ ? `③ 由 pi 里的 herdr 扩展上报：<b>${r.raw}</b>` : `③ 匹配规则：${r.rule ? r.rule.d : '没有规则命中，按 idle 处理'} → <b>${r.raw}</b>`,
+      `④ 显示状态：<b>${a.st}</b>${a.st === 'done' ? '（做完了，你还没看）' : ''}`,
+    ];
+    const ol = $('#steps');
+    ol.innerHTML = items.map((t, i) => `<li class="${a.integ && i === 1 ? 'skip' : ''}">${t}</li>`).join('');
+    const lis = [...ol.children];
+    if (!animate) { lis.forEach((li) => li.classList.add('lit')); return; }
+    lis.forEach((li, i) => setTimeout(() => li.classList.add('lit'), 140 * i));
+  }
+  function renderBtns() {
+    const a = AG[sel];
+    $('#btns').innerHTML = BTNS[a.type].map(([k, l]) => `<button class="btn${a.screen === k ? ' on' : ''}" data-s="${k}">${l}</button>`).join('');
+    $$('#btns .btn').forEach((b) => b.onclick = () => {
+      const was = a.st;
+      a.screen = b.dataset.s; a.seen = true;
+      if (sel === PI) piTimer = 0;
+      update(sel, was); all(true);
+    });
+    const isPi = a.type === 'pi', box = $('#integ');
+    box.disabled = !isPi; box.checked = isPi && a.integ;
+    $('#integ-wrap').classList.toggle('off', !isPi);
+    $('#integ-label').innerHTML = isPi
+      ? '装了 herdr 的 pi 集成，由 pi 主动上报状态'
+      : `${a.type} 的 herdr 集成只上报会话 ID，用来恢复会话，状态仍然靠读屏幕`;
+  }
+  function select(i) {
+    sel = i; AG[i].seen = true; scrolled = false; $('#scroll').checked = false;
+    update(i, AG[i].st); all(true);
+  }
+  function all(animate) { renderSide(); renderTabs(); renderPane(); renderBtns(); renderSteps(animate); }
+  $('#integ').onchange = (e) => { AG[sel].integ = e.target.checked; update(sel, AG[sel].st); all(true); };
+  $('#scroll').onchange = (e) => { scrolled = e.target.checked; renderPane(); };
+
+  // pi 在后台自己跑：演示区域进入视野后才开始计时，跑一会儿就完成
+  new IntersectionObserver((es) => { visible = es.some((e) => e.isIntersecting); }, { threshold: 0.2 }).observe($('#win'));
+  setInterval(() => {
+    if (!visible) return;
+    tick++;
+    const pi = AG[PI];
+    if (pi.screen === 'working' && ++piTimer > 26) {
+      const was = pi.st;
+      pi.screen = 'idle'; piTimer = 0;
+      if (sel !== PI) pi.seen = false;
+      update(PI, was);
+      renderSide();
+      if (sel === PI) { renderPane(); renderBtns(); }
+      renderSteps(false);
+    }
+    if (!scrolled && AG[sel].screen === 'working') renderPane();
+  }, 250);
+  AG.forEach((a, i) => update(i, a.st));
+  all(false);
+})();
+</script>
+</body>
+</html>

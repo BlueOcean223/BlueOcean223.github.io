@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>一个字节在终端模拟器、line discipline 和 cat 之间的往返</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f; --faint-2: #b0aea5;
+  --border: #e8e6dc; --border-strong: #d8d4c7; --accent: #d97757; --accent-hover: #c15f3f;
+  --hair: rgba(20,20,19,.1); --hair-2: rgba(20,20,19,.2);
+  --sky: #6a9bcc; --olive: #788c5d; --kraft: #d4a27f; --poppy: #de6262; --matcha: #ced6bf; --manilla: #ebdbbc;
+  --term: #141413; --term-text: #e8e6dc;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; }
+.sim { outline: none; }
+.label { font: 500 12px var(--font-sans); color: var(--muted); margin: 0 0 6px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.btn { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); border-radius: 999px; padding: 4px 14px; font: 500 12.5px var(--font-sans); cursor: pointer; transition: background .2s, border-color .2s; white-space: nowrap; }
+.btn:hover { background: var(--bg-soft); }
+.btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+
+.top { display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: space-between; margin-bottom: 12px; }
+.flag { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border: 1px solid var(--border-strong); border-radius: 999px; background: #fff; font: 12.5px var(--font-mono); cursor: pointer; user-select: none; transition: .15s; }
+.flag input { accent-color: var(--accent); margin: 0; }
+.flag small { font: 11.5px var(--font-sans); color: var(--muted); }
+.flag.off { opacity: .5; }
+.flag.off span { text-decoration: line-through; }
+
+svg { width: 100%; height: auto; display: block; background: var(--bg); border-radius: 10px; }
+.nd rect { fill: #fff; stroke: var(--hair-2); stroke-width: 1; transition: fill .2s, stroke .2s; }
+.nd.flash rect { stroke: var(--accent); stroke-width: 2; fill: #fbeee8; }
+.nd.dead rect { stroke: var(--poppy); fill: #fbeaea; }
+.nd .t1 { fill: var(--text); font: 600 15px var(--font-sans); }
+.nd .t2 { fill: var(--muted); font: 12px var(--font-mono); }
+.nd .t3 { fill: var(--faint); font: 12px var(--font-sans); }
+.kernel-box { fill: rgba(235,219,188,.38); stroke: var(--kraft); stroke-dasharray: 5 5; }
+.kernel-label { fill: #9a6a43; font: 600 13px var(--font-sans); }
+.lane { stroke: var(--faint-2); stroke-width: 1.2; fill: none; stroke-dasharray: 3 6; }
+.lane-label { fill: var(--faint); font: 12px var(--font-sans); }
+.sigpath { fill: none; stroke: var(--poppy); stroke-width: 2; stroke-dasharray: 6 5; opacity: 0; transition: opacity .2s; }
+.sigpath.on { opacity: 1; }
+.chip rect { fill: #fff; stroke: var(--sky); stroke-width: 1.4; }
+.chip text { fill: var(--text); font: 13px var(--font-mono); }
+.chip.key rect { fill: var(--text); stroke: var(--text); } .chip.key text { fill: var(--bg); }
+.chip.echo rect { fill: var(--manilla); stroke: var(--kraft); }
+.chip.out rect { fill: var(--matcha); stroke: var(--olive); }
+.chip.sig rect { fill: var(--poppy); stroke: var(--poppy); } .chip.sig text { fill: #fff; font-weight: 700; }
+.chip.fade { opacity: 0; transition: opacity .25s; }
+
+.keys { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 12px 0 2px; }
+.key { font: 12.5px var(--font-mono); min-width: 36px; padding: 4px 10px; border-radius: 7px; border: 1px solid var(--hair-2); border-bottom-width: 3px; background: #fff; color: var(--text); cursor: pointer; }
+.key:hover { border-color: var(--text); }
+.key:active { transform: translateY(1px); border-bottom-width: 2px; }
+.key.wide { min-width: 64px; }
+.focus-hint { font-size: 12px; color: var(--faint); margin-left: 4px; }
+.sim.focused .focus-hint { color: var(--accent-hover); }
+.speed { margin-left: auto; font-size: 12.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.speed select { background: #fff; color: var(--text); border: 1px solid var(--hair-2); border-radius: 6px; font: 12.5px var(--font-sans); padding: 2px 6px; }
+
+.panels { display: grid; grid-template-columns: 1.15fr .8fr 1.3fr; gap: 14px; margin-top: 12px; }
+.panels > * { min-width: 0; }
+@media (max-width: 700px) { .panels { grid-template-columns: 1fr; } }
+.screen { background: var(--term); border-radius: 8px; padding: 10px 12px; font: 12.5px/1.45 var(--font-mono); height: 190px; overflow: hidden; white-space: pre; color: var(--term-text); }
+.screen .cur { background: var(--accent); color: var(--term); }
+.buf { display: flex; flex-wrap: wrap; gap: 4px; min-height: 40px; padding: 7px; border: 1px dashed var(--kraft); border-radius: 8px; background: #fff; align-content: flex-start; }
+.buf span { font: 12px var(--font-mono); background: var(--manilla); border: 1px solid var(--kraft); border-radius: 4px; padding: 0 6px; animation: lin .2s both; }
+.buf em { font-size: 12px; color: var(--faint); font-style: normal; }
+.progbox { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--hair); border-radius: 8px; font-size: 13px; background: #fff; }
+.progbox b { font-family: var(--font-mono); }
+.progbox.dead { border-color: var(--poppy); background: #fbeaea; }
+.log { height: 190px; overflow: auto; margin: 0; padding: 8px 10px 8px 28px; background: #fff; border: 1px solid var(--hair); border-radius: 8px; font-size: 12.5px; line-height: 1.55; overscroll-behavior: contain; }
+.log li { margin: 2px 0; color: var(--text-soft); }
+.log li.sep { list-style: none; margin: 8px 0 2px -18px; color: var(--accent-hover); font: 600 11.5px var(--font-sans); border-top: 1px solid var(--hair); padding-top: 5px; }
+.log li.sep:first-child { margin-top: 0; border-top: 0; }
+.try { margin-top: 12px; font-size: 12.5px; color: var(--text-soft); }
+.try ol { margin: 4px 0 0; padding-left: 20px; columns: 2; column-gap: 28px; }
+@media (max-width: 700px) { .try ol { columns: 1; } }
+.try li { margin: 0 0 3px; break-inside: avoid; }
+.cap { margin-top: 8px; color: var(--muted); font-size: 12px; }
+@keyframes lin { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { * { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+</style>
+</head>
+<body>
+<div class="sim" id="sim" tabindex="0">
+  <div class="top">
+    <div>
+      <div class="label">line discipline 的开关（stty）</div>
+      <div class="row" id="flags"></div>
+    </div>
+    <div>
+      <div class="label">预设</div>
+      <div class="row">
+        <button class="btn on" data-preset="cooked">cooked（默认）</button>
+        <button class="btn" data-preset="raw">raw（cfmakeraw）</button>
+      </div>
+    </div>
+  </div>
+  <svg viewBox="0 0 1000 330" aria-label="字节往返示意图">
+    <rect class="kernel-box" x="318" y="14" width="486" height="306" rx="14"/>
+    <text class="kernel-label" x="332" y="36">内核 · tty 子系统</text>
+    <path class="lane" d="M55,130 L915,130"/>
+    <path class="lane" d="M915,248 L200,248"/>
+    <text class="lane-label" x="276" y="121">输入 →</text>
+    <text class="lane-label" x="276" y="239">← 输出</text>
+    <path class="sigpath" id="sigpath" d="M560,72 L560,50 L915,50 L915,72"/>
+    <g class="nd" id="nd-kbd"><rect x="12" y="104" width="86" height="52" rx="10"/><text class="t1" x="55" y="135" text-anchor="middle">⌨ 键盘</text></g>
+    <g class="nd" id="nd-emu"><rect x="135" y="72" width="130" height="228" rx="12"/><text class="t1" x="200" y="97" text-anchor="middle">Ghostty</text><text class="t2" x="200" y="115" text-anchor="middle">终端模拟器</text><text class="t3" x="200" y="165" text-anchor="middle">按键 → 字节</text><text class="t3" x="200" y="282" text-anchor="middle">字节 → 解析 → 像素</text></g>
+    <g class="nd" id="nd-master"><rect x="338" y="72" width="96" height="228" rx="12"/><text class="t1" x="386" y="97" text-anchor="middle">master</text><text class="t2" x="386" y="115" text-anchor="middle">/dev/ptmx</text></g>
+    <g class="nd" id="nd-ld"><rect x="478" y="72" width="164" height="228" rx="12"/><text class="t1" x="560" y="97" text-anchor="middle">line discipline</text><text class="t3" x="560" y="165" text-anchor="middle">icanon · echo · isig · icrnl</text><text class="t3" x="560" y="190" text-anchor="middle">echo ↓</text><text class="t3" x="560" y="282" text-anchor="middle">opost · onlcr</text></g>
+    <g class="nd" id="nd-slave"><rect x="686" y="72" width="96" height="228" rx="12"/><text class="t1" x="734" y="97" text-anchor="middle">slave</text><text class="t2" x="734" y="115" text-anchor="middle">/dev/ttys008</text></g>
+    <g class="nd" id="nd-prog"><rect x="845" y="72" width="140" height="228" rx="12"/><text class="t1" x="915" y="97" text-anchor="middle">cat</text><text class="t2" x="915" y="115" text-anchor="middle">fd 0/1/2 = slave</text><text class="t3" x="915" y="195" text-anchor="middle" id="progtxt">阻塞在 read()</text></g>
+    <g id="chips"></g>
+  </svg>
+  <div class="keys">
+    <button class="key" data-k="a">a</button><button class="key" data-k="b">b</button><button class="key" data-k="c">c</button>
+    <button class="key wide" data-k="Backspace">⌫ 退格</button>
+    <button class="key wide" data-k="Enter">⏎ 回车</button>
+    <button class="key wide" data-k="CtrlC">Ctrl-C</button>
+    <button class="key" data-k="Up">↑</button>
+    <button class="btn" id="clear">清屏重来</button>
+    <span class="focus-hint" id="focus-hint">点一下这块区域，也可以直接用键盘输入</span>
+    <span class="speed">速度 <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></span>
+  </div>
+  <div class="panels">
+    <div><div class="label">Ghostty 的屏幕</div><div class="screen" id="screen"></div></div>
+    <div>
+      <div class="label">line discipline 的行缓冲</div>
+      <div class="buf" id="buf"></div>
+      <div class="progbox" id="progbox"></div>
+    </div>
+    <div><div class="label">发生了什么</div><ol class="log" id="log"></ol></div>
+  </div>
+  <div class="try">可以按这个顺序试：
+    <ol>
+      <li>cooked 下敲 <code>a b c</code>、退格、回车：退格由内核处理，cat 只在回车后收到整行。</li>
+      <li>切到 raw 再敲 <code>a b c</code>：没有回显，每个字节立刻到达 cat，屏幕上的字是 cat 写回来的。</li>
+      <li>raw 下单独打开 <code>echo</code>：每个字出现两次，一次是内核回显，一次是 cat 写回。</li>
+      <li>cooked 下关掉 <code>onlcr</code>，连按几次回车：只换行不回车，出现阶梯。</li>
+      <li>在 cooked 和 raw 下各按一次 <code>↑</code>：同样三个字节，一次显示成 <code>^[[A</code>，一次让光标上移。</li>
+      <li>在 cooked 和 raw 下各按一次 Ctrl-C：一次变成 SIGINT，一次只是字节 <code>0x03</code>。</li>
+    </ol>
+  </div>
+  <div class="cap">照 line discipline 的规则写的模拟，只实现了这五个开关。cat 被 Ctrl-C 终止以后会自动重新运行，方便接着试。</div>
+</div>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const $$ = (s) => [...document.querySelectorAll(s)];
+  const NS = 'http://www.w3.org/2000/svg';
+  const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function S(tag, attrs, parent) {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs || {}) { if (k === 'text') e.textContent = attrs[k]; else e.setAttribute(k, attrs[k]); }
+    if (parent) parent.appendChild(e);
+    return e;
+  }
+
+  /* --- stty 开关 --- */
+  const FLAG_DEF = [['icanon', '按行缓冲'], ['echo', '回显'], ['isig', '^C→信号'], ['icrnl', '\\r→\\n'], ['onlcr', '输出 \\n→\\r\\n']];
+  const F = { icanon: true, echo: true, isig: true, icrnl: true, onlcr: true };
+  const flagsBox = $('#flags');
+  FLAG_DEF.forEach(([k, desc]) => {
+    const l = document.createElement('label');
+    l.className = 'flag'; l.dataset.flag = k;
+    l.innerHTML = `<input type="checkbox" checked><span>${k}</span><small>${desc}</small>`;
+    l.querySelector('input').onchange = (e) => { setFlag(k, e.target.checked); markPreset(); };
+    flagsBox.appendChild(l);
+  });
+  function setFlag(k, v) {
+    F[k] = v;
+    const l = flagsBox.querySelector(`[data-flag=${k}]`);
+    l.querySelector('input').checked = v;
+    l.classList.toggle('off', !v);
+    if (k === 'icanon' && !v && buf.length) { buf = []; renderBuf(); log('（模拟简化：关掉 icanon 时清空了行缓冲）'); }
+  }
+  function markPreset() {
+    const all = Object.values(F);
+    $$('[data-preset]').forEach((b) => b.classList.toggle('on',
+      (b.dataset.preset === 'cooked' && all.every(Boolean)) || (b.dataset.preset === 'raw' && all.every((v) => !v))));
+  }
+  $$('[data-preset]').forEach((b) => b.onclick = () => {
+    const v = b.dataset.preset === 'cooked';
+    Object.keys(F).forEach((k) => setFlag(k, v));
+    markPreset();
+    sep(v ? 'stty sane（cooked）' : 'cfmakeraw（raw）');
+    log(v ? '恢复默认：行缓冲、回显、信号、换行转换全部打开。cat、read、python 的 input() 都在这种模式下运行。'
+          : '进入 raw：五个开关全部关掉。vim、pi、Claude Code 这类 TUI 启动时就是这样调用 cfmakeraw() 和 tcsetattr() 的，之后每个按键都由它们自己处理。');
+  });
+
+  /* --- 模拟器屏幕 --- */
+  const screenEl = $('#screen');
+  const ROWS = 9, COLS = 54;
+  let lines = [''], row = 0, col = 0;
+  function put(ch) {
+    while (lines.length <= row) lines.push('');
+    const l = lines[row].padEnd(col, ' ');
+    lines[row] = l.slice(0, col) + ch + l.slice(col + 1);
+    col = Math.min(col + 1, COLS - 1);
+  }
+  function lf() { row++; if (row >= ROWS) { lines.shift(); row = ROWS - 1; } while (lines.length <= row) lines.push(''); }
+  function writeScreen(bytes) {
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      if (b === 0x1b && bytes[i + 1] === 0x5b) {
+        let j = i + 2, num = '';
+        while (j < bytes.length && bytes[j] >= 0x30 && bytes[j] <= 0x39) num += String.fromCharCode(bytes[j++]);
+        const fin = String.fromCharCode(bytes[j] || 0), n = parseInt(num || '1', 10);
+        if (fin === 'A') row = Math.max(0, row - n);
+        else if (fin === 'B') { row = Math.min(ROWS - 1, row + n); while (lines.length <= row) lines.push(''); }
+        else if (fin === 'C') col = Math.min(COLS - 1, col + n);
+        else if (fin === 'D') col = Math.max(0, col - n);
+        i = j; continue;
+      }
+      if (b === 0x0d) col = 0;
+      else if (b === 0x0a) lf();
+      else if (b === 0x08) col = Math.max(0, col - 1);
+      else if (b >= 0x20 && b < 0x7f) put(String.fromCharCode(b));
+    }
+    renderScreen();
+  }
+  function renderScreen() {
+    let html = '';
+    for (let r = 0; r < Math.max(lines.length, row + 1); r++) {
+      const l = lines[r] || '';
+      if (r === row) {
+        const p = l.padEnd(col + 1, ' ');
+        html += esc(p.slice(0, col)) + '<span class="cur">' + esc(p[col]) + '</span>' + esc(p.slice(col + 1));
+      } else html += esc(l);
+      html += '\n';
+    }
+    screenEl.innerHTML = html;
+  }
+  function resetScreen() { lines = ['$ cat', '']; row = 1; col = 0; renderScreen(); }
+
+  /* --- 行缓冲和前台程序 --- */
+  let buf = [];
+  let catAlive = true;
+  const bufEl = $('#buf');
+  const NAMES = { 0x0d: '\\r', 0x0a: '\\n', 0x7f: 'DEL', 0x03: '^C', 0x1b: 'ESC', 0x08: '\\b', 0x20: '␠' };
+  const bl = (b) => NAMES[b] ?? String.fromCharCode(b);
+  const bls = (arr) => arr.map(bl).join(' ');
+  const hex = (arr) => arr.map((b) => b.toString(16).padStart(2, '0')).join(' ');
+  function renderBuf() {
+    bufEl.innerHTML = buf.length ? buf.map((b) => `<span>${esc(bl(b))}</span>`).join('') : '<em>（空）</em>';
+  }
+  function setProg(state, msg) {
+    const box = $('#progbox');
+    box.classList.toggle('dead', state === 'dead');
+    box.innerHTML = `<div class="label" style="margin-bottom:2px">前台程序</div><b>cat</b> · ${msg}`;
+    $('#progtxt').textContent = state === 'dead' ? '被 SIGINT 终止' : (state === 'busy' ? '收到数据，写回' : '阻塞在 read()');
+    $('#nd-prog').classList.toggle('dead', state === 'dead');
+  }
+
+  /* --- 日志 --- */
+  const logEl = $('#log');
+  function log(html) { const li = document.createElement('li'); li.innerHTML = html; logEl.appendChild(li); trimLog(); }
+  function sep(text) { const li = document.createElement('li'); li.className = 'sep'; li.textContent = text; logEl.appendChild(li); trimLog(); }
+  function trimLog() { while (logEl.children.length > 80) logEl.firstChild.remove(); logEl.scrollTop = logEl.scrollHeight; }
+
+  /* --- 字节在图上移动 --- */
+  const chips = $('#chips');
+  const speedSel = $('#speed');
+  const PATH = {
+    kbd_emu: [[55, 130], [200, 130]],
+    emu_master: [[200, 130], [386, 130]],
+    master_ld: [[386, 130], [560, 130]],
+    ld_prog: [[560, 130], [734, 130], [915, 130]],
+    echo: [[560, 130], [560, 248]],
+    prog_turn: [[915, 130], [915, 248]],
+    prog_ld: [[915, 248], [734, 248], [560, 248]],
+    ld_emu: [[560, 248], [386, 248], [200, 248]],
+    sig: [[560, 72], [560, 50], [915, 50], [915, 72]],
+  };
+  const flash = (id) => { const n = $('#nd-' + id); n.classList.add('flash'); setTimeout(() => n.classList.remove('flash'), 420); };
+  function travel(points, label, cls) {
+    return new Promise((res) => {
+      const g = S('g', { class: 'chip ' + (cls || '') }, chips);
+      const r = S('rect', { rx: 6 }, g);
+      const t = S('text', { 'text-anchor': 'middle', dy: '0.35em', text: label }, g);
+      let tw = 0; try { tw = t.getComputedTextLength(); } catch (e) { /* 不可见时量不到 */ }
+      if (!tw) tw = label.length * 7.8;
+      const W = tw + 16, H = 24;
+      r.setAttribute('x', -W / 2); r.setAttribute('y', -H / 2); r.setAttribute('width', W); r.setAttribute('height', H);
+      const segs = []; let total = 0;
+      for (let i = 0; i < points.length - 1; i++) {
+        const [x1, y1] = points[i], [x2, y2] = points[i + 1], L = Math.hypot(x2 - x1, y2 - y1);
+        segs.push({ x1, y1, x2, y2, L }); total += L;
+      }
+      const dur = RM ? 1 : Math.max(120, total / (0.42 * parseFloat(speedSel.value)));
+      const t0 = performance.now();
+      const ease = (p) => p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      (function frame(now) {
+        const p = Math.min(1, (now - t0) / dur);
+        let d = ease(p) * total, x = points[0][0], y = points[0][1];
+        for (const s of segs) {
+          if (d <= s.L) { x = s.x1 + (s.x2 - s.x1) * d / s.L; y = s.y1 + (s.y2 - s.y1) * d / s.L; break; }
+          d -= s.L; x = s.x2; y = s.y2;
+        }
+        g.setAttribute('transform', `translate(${x},${y})`);
+        if (p < 1) requestAnimationFrame(frame);
+        else { g.classList.add('fade'); setTimeout(() => g.remove(), 260); res(); }
+      })(t0);
+    });
+  }
+  const pause = (ms) => sleep(RM ? 0 : ms / parseFloat(speedSel.value));
+
+  /* --- tty 的处理逻辑 --- */
+  const KEYS = {
+    a: { name: 'a', bytes: [0x61] }, b: { name: 'b', bytes: [0x62] }, c: { name: 'c', bytes: [0x63] },
+    Backspace: { name: '⌫', bytes: [0x7f], note: 'macOS 上退格键发送的是 DEL（0x7F）' },
+    Enter: { name: '⏎', bytes: [0x0d], note: '回车键发送的是 \\r，不是 \\n' },
+    CtrlC: { name: 'Ctrl-C', bytes: [0x03], note: 'Ctrl 加字母等于字母编码和 0x1F 按位与，C 对应 0x03' },
+    Up: { name: '↑', bytes: [0x1b, 0x5b, 0x41], note: '方向键没有对应的单个字节，编码成 3 个字节的 ESC [ A' },
+  };
+  function echoRepr(b) {
+    if (b === 0x0a || b === 0x0d || b === 0x09) return [b];
+    if (b < 0x20) return [0x5e, b + 0x40];      // echoctl：控制字符显示成 ^X
+    if (b === 0x7f) return [0x5e, 0x3f];        // ^?
+    return [b];
+  }
+  function opost(arr) {
+    if (!F.onlcr) return arr.slice();
+    const o = []; for (const b of arr) { if (b === 0x0a) o.push(0x0d, 0x0a); else o.push(b); } return o;
+  }
+  function describeOut(out) {
+    if (out.includes(0x1b)) return '：Ghostty 解析出 <code>ESC [ A</code>，执行“光标上移一行”';
+    if (!F.onlcr && out.includes(0x0a)) return '：只有 \\n 没有 \\r，光标下移，但不回到行首';
+    return '';
+  }
+  async function handle(k) {
+    sep(`按键 ${k.name}`);
+    flash('kbd');
+    await travel(PATH.kbd_emu, k.name, 'key');
+    flash('emu');
+    log(`Ghostty 把按键编码成 ${k.bytes.length} 个字节 <code>${hex(k.bytes)}</code>${k.note ? '。' + k.note : ''}`);
+    await travel(PATH.emu_master, hex(k.bytes), '');
+    flash('master');
+    await travel(PATH.master_ld, hex(k.bytes), '');
+    flash('ld');
+
+    const echo = [], deliver = [], notes = [];
+    let signal = false;
+    for (let b of k.bytes) {
+      if (F.icrnl && b === 0x0d) { b = 0x0a; notes.push('icrnl：输入的 <code>\\r</code> 被改成 <code>\\n</code>'); }
+      if (F.isig && b === 0x03) {
+        signal = true;
+        if (buf.length) notes.push('isig：丢掉行缓冲里还没交付的内容');
+        buf = [];
+        if (F.echo) echo.push(0x5e, 0x43);
+        notes.push('isig：<code>0x03</code> 是 intr 字符，不交给程序，改为给前台进程组发 SIGINT');
+        break;
+      }
+      if (F.icanon) {
+        if (b === 0x7f) {
+          if (buf.length) {
+            buf.pop();
+            if (F.echo) echo.push(0x08, 0x20, 0x08);
+            notes.push('icanon：DEL 是 erase 字符，从行缓冲删掉最后一个字符' + (F.echo ? '，再回显 <code>\\b 空格 \\b</code> 擦掉屏幕上的字' : ''));
+          } else notes.push('icanon：行缓冲是空的，退格被忽略');
+          continue;
+        }
+        buf.push(b);
+        if (F.echo) echo.push(...echoRepr(b));
+        if (b === 0x0a) { deliver.push(...buf); buf = []; notes.push('icanon：遇到 <code>\\n</code>，整行交给程序，cat 的 read() 返回'); }
+      } else {
+        deliver.push(b);
+        if (F.echo) echo.push(...echoRepr(b));
+      }
+    }
+    if (F.icanon && !deliver.length && !signal && k.bytes[0] !== 0x7f)
+      notes.push('icanon：字节进了行缓冲；还没遇到行结束符，cat 的 read() 继续阻塞');
+    if (!F.icanon && !signal) notes.push('icanon 关闭：字节立刻交给程序，不做行编辑');
+    if (!F.isig && k.bytes[0] === 0x03) notes.push('isig 关闭：<code>0x03</code> 被当作普通字节。vim、pi 就是这样自己处理 Ctrl-C 的');
+    renderBuf();
+    notes.forEach(log);
+
+    if (echo.length) {
+      const out = opost(echo);
+      log(`echo：内核把 <code>${esc(bls(echo))}</code> 写回 master，你能看到自己敲的字，靠的就是这一步`);
+      await travel(PATH.echo, bls(echo), 'echo');
+      await travel(PATH.ld_emu, bls(out), 'echo');
+      flash('emu');
+      writeScreen(out);
+    } else if (!F.echo && !signal) {
+      log('echo 关闭：内核不回显');
+    }
+
+    if (signal) {
+      $('#sigpath').classList.add('on');
+      await travel(PATH.sig, 'SIGINT', 'sig');
+      $('#sigpath').classList.remove('on');
+      catAlive = false;
+      setProg('dead', '收到 SIGINT，默认动作是退出；shell 报告退出码 130（128 + 2）');
+      log('cat 并没有读到 Ctrl-C 这个字符，它是被信号终止的');
+      await pause(1100);
+      writeScreen([0x0d, 0x0a, ...Array.from('$ cat').map((c) => c.charCodeAt(0)), 0x0d, 0x0a]);
+      catAlive = true;
+      setProg('idle', '（为了继续实验，又运行了一次 cat）阻塞在 read()');
+      return;
+    }
+
+    if (deliver.length && catAlive) {
+      await travel(PATH.ld_prog, bls(deliver), '');
+      flash('prog');
+      setProg('busy', `read() 返回 ${deliver.length} 个字节：<code>${esc(bls(deliver))}</code>`);
+      log(`cat 读到 <code>${esc(bls(deliver))}</code>，原样 write() 到 stdout，也就是同一个 slave`);
+      await travel(PATH.prog_turn, bls(deliver), 'out');
+      await travel(PATH.prog_ld, bls(deliver), 'out');
+      flash('ld');
+      const out = opost(deliver);
+      if (out.length !== deliver.length) log('onlcr：输出里的 <code>\\n</code> 被改成 <code>\\r\\n</code>');
+      await travel(PATH.ld_emu, bls(out), 'out');
+      flash('emu');
+      writeScreen(out);
+      log('Ghostty 解析这些字节，更新屏幕' + describeOut(out));
+      setProg('idle', '阻塞在 read()');
+    }
+  }
+  let queue = Promise.resolve();
+  function press(id) { const k = KEYS[id]; if (!k) return; queue = queue.then(() => handle(k)).catch((e) => console.error(e)); }
+  $$('.key').forEach((b) => b.onclick = () => press(b.dataset.k));
+
+  const sim = $('#sim'), hint = $('#focus-hint');
+  sim.addEventListener('focusin', () => { sim.classList.add('focused'); hint.textContent = '正在接收键盘输入'; });
+  sim.addEventListener('focusout', (e) => {
+    if (sim.contains(e.relatedTarget)) return;
+    sim.classList.remove('focused'); hint.textContent = '点一下这块区域，也可以直接用键盘输入';
+  });
+  // 点空白处时把焦点放回卡片，键盘才能接着用
+  sim.addEventListener('mousedown', (e) => {
+    if (!e.target.closest('button, input, select, label, .log')) setTimeout(() => sim.focus({ preventScroll: true }), 0);
+  });
+  sim.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+    let id = null;
+    if (e.ctrlKey && e.key.toLowerCase() === 'c') id = 'CtrlC';
+    else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON') id = 'Enter';
+    else if (e.key === 'Backspace') id = 'Backspace';
+    else if (e.key === 'ArrowUp') id = 'Up';
+    else if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1 && /[ -~]/.test(e.key)) {
+      // 焦点在按钮上时，空格会触发按钮本身的点击，这里不再重复处理
+      if (e.key === ' ' && e.target.tagName === 'BUTTON') return;
+      KEYS['_' + e.key] = { name: e.key === ' ' ? '␠' : e.key, bytes: [e.key.charCodeAt(0)] };
+      id = '_' + e.key;
+    }
+    if (id) { e.preventDefault(); press(id); }
+  });
+  $('#clear').onclick = () => { queue = queue.then(() => { buf = []; renderBuf(); resetScreen(); logEl.innerHTML = ''; setProg('idle', '阻塞在 read()'); }); };
+  resetScreen(); renderBuf(); setProg('idle', '阻塞在 read()');
+  log('cat 已经启动，阻塞在 <code>read(0, …)</code>，等 slave 上有数据。');
+})();
+</script>
+</body>
+</html>
