@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clawd 的 target 目录越长越大</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #faf9f5; --bg-soft: #f0eee6; --text: #141413; --text-soft: #3d3c38; --muted: #5e5d59; --faint: #87867f;
+  --border: #e8e6dc; --accent: #d97757;
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #fff; }
+body { font-family: var(--font-sans); color: var(--text); font-size: 14px; line-height: 1.6; padding: 16px 18px 14px; -webkit-font-smoothing: antialiased; }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 16px; }
+@media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+figure { margin: 0; }
+figure svg { width: 100%; display: block; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+figcaption { display: flex; gap: 10px; margin-top: 9px; }
+.no { flex: none; width: 20px; height: 20px; border-radius: 50%; background: var(--text); color: #fff; font: 600 11.5px/20px var(--font-sans); text-align: center; margin-top: 1px; }
+.ttl { font: 600 14.5px/1.4 var(--font-sans); }
+figcaption p { margin: 2px 0 0; font-size: 13px; line-height: 1.6; color: var(--text-soft); }
+</style>
+</head>
+<body>
+<div class="grid">
+  <figure>
+    <svg id="p1" viewBox="0 0 80 36" shape-rendering="crispEdges" role="img" aria-label="Clawd 站在一个很小的 target 文件夹旁边，上面写着 1.9M"></svg>
+    <figcaption><div class="no">1</div><div><div class="ttl">cargo new</div><p>hello world 编完，<code>target/</code> 只有 1.9M，release 二进制 430KB。</p></div></figcaption>
+  </figure>
+  <figure>
+    <svg id="p2" viewBox="0 0 80 36" shape-rendering="crispEdges" role="img" aria-label="一个个 crate 掉进 target 文件夹，文件夹越来越大，涨到 546M"></svg>
+    <figcaption><div class="no">2</div><div><div class="ttl">加五个依赖</div><p>tokio、axum、serde、serde_json、reqwest，展开是 162 个 crate，<code>target/</code> 涨到 546M。</p></div></figcaption>
+  </figure>
+  <figure>
+    <svg id="p3" viewBox="0 0 80 36" shape-rendering="crispEdges" role="img" aria-label="三个 Clawd 各自敲键盘，各守着一个 target 目录，分别是 20G、8.5G、3.5G"></svg>
+    <figcaption><div class="no">3</div><div><div class="ttl">三个会话，三份 target</div><p>共用一个目录要排队等锁，各用各的就各存一份。confdeck 的 <code>debug</code>、<code>shots</code>、<code>verify</code> 加起来 32G。</p></div></figcaption>
+  </figure>
+  <figure>
+    <svg id="p4" viewBox="0 0 80 36" shape-rendering="crispEdges" role="img" aria-label="屏幕上 cargo clean 报 58.0GiB，du 报 33G，Clawd 瞪大眼睛流下一滴泪"></svg>
+    <figcaption><div class="no">4</div><div><div class="ttl">cargo clean --dry-run</div><p>cargo 报 58.0GiB，<code>du</code> 说是 33G：硬链接出来的 <code>.o</code> 被算了好几遍。</p></div></figcaption>
+  </figure>
+</div>
+
+<script src="/terminal-tty-pty/clawd.js"></script>
+<script>
+(() => {
+  const { R, T, rects, clawd, every, sprite, typingFrames, chip } = Clawd;
+  const NS = 'http://www.w3.org/2000/svg';
+  const layer = (svg, x = 0, y = 0, s = 1) => {
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('transform', `translate(${x} ${y})${s === 1 ? '' : ` scale(${s})`}`);
+    svg.appendChild(g);
+    return g;
+  };
+  const floor = R(0, 34, 80, 1, 'L');
+
+  // 底边在 yb、宽 w 高 h 的文件夹，标签写在正中
+  const folder = (x, yb, w, h, label, size = 2.6) => {
+    const y = yb - h;
+    return R(x, y - 1.5, Math.max(4, w * 0.4), 1.5, '#6b8db8') + R(x, y, w, h, 'b') + R(x, y, w, 1, '#93b3d8')
+      + (label ? T(x + w / 2, y + h / 2 + size * 0.36, label, size, 'w', 'text-anchor="middle" font-weight="600"') : '');
+  };
+
+  // 1：一个很小的 target
+  {
+    const svg = document.getElementById('p1');
+    svg.innerHTML = floor + folder(46, 34, 14, 9, '1.9M') + T(53, 21, 'target/', 2.4, 'n', 'text-anchor="middle"');
+    sprite(layer(svg, 18, 18), [
+      rects(clawd({ face: 'right', eyes: 'happy' })),
+      rects(clawd({ face: 'right', eyes: 'open', look: 1 })),
+      rects(clawd({ face: 'right', eyes: 'blink', look: 1 })),
+    ], [[0, 16], [1, 12], [2, 1], [1, 6]]);
+  }
+
+  // 2：crate 一个个掉进去，文件夹跟着长
+  {
+    const svg = document.getElementById('p2');
+    svg.innerHTML = floor;
+    const me = layer(svg, 6, 18);
+    const box = layer(svg);
+    const NAMES = ['tokio', 'axum', 'serde', 'hyper', 'reqwest', 'h2', 'rustls', 'mio'];
+    const up = rects(clawd({ face: 'right', eyes: 'open', look: 1, lookY: -1 }));
+    const cheer = rects(clawd({ face: 'right', eyes: 'happy', arms: ['up', 'up'] }));
+    const STEPS = 8, PER = 6, HOLD = 14, LOOP = STEPS * PER + HOLD;
+    let shown = '';
+    every((t) => {
+      const k = t % LOOP;
+      const n = Math.min(STEPS, Math.floor(k / PER));
+      const f = n / STEPS;
+      const w = 12 + f * 30, h = 7 + f * 17;
+      const mb = f === 0 ? 1.9 : Math.round(1.9 + f * (546 - 1.9));
+      let s = folder(58 - w / 2, 34, w, h, `${mb}M`, 2.6 + f * 1.2);
+      if (k < STEPS * PER) {
+        const r = k % PER;
+        s += chip(58, 2 + r * ((34 - h - 2) / PER), NAMES[n % NAMES.length], 'byte', 2.4);
+      }
+      box.innerHTML = s;
+      const pose = k >= STEPS * PER ? 'cheer' : 'up';
+      if (pose !== shown) { me.innerHTML = pose === 'cheer' ? cheer : up; shown = pose; }
+    });
+  }
+
+  // 3：三个会话各守一份 target
+  {
+    const svg = document.getElementById('p3');
+    const COLS = [[3, 'debug', 20, 0], [29, 'shots', 8.5, 5], [55, 'verify', 3.5, 11]];
+    // 侧面看的小笔记本：屏幕竖着，键盘平放
+    svg.innerHTML = floor + COLS.map(([x]) => R(x + 10.2, 30.6, 5, 0.8, 'm') + R(x + 14.6, 25.8, 0.8, 5.6, 'k')).join('');
+    const box = layer(svg);
+    COLS.forEach(([x, , , d]) => {
+      const seq = [[0, 2 + (d % 3)], [1, 2], [0, 1], [1, 2], [0, 3], [2, 1], [0, 2 + (d % 4)], [1, 2]];
+      sprite(layer(svg, x, 24.4, 0.6), typingFrames(), seq);
+    });
+    every((t) => {
+      box.innerHTML = COLS.map(([x, name, gb, d]) => {
+        const k = (t + d * 3) % 60;
+        const f = Math.min(1, k / 40);
+        const max = 6 + gb * 0.75;
+        const h = 4 + f * max;
+        const w = 6.5;
+        return folder(x + 16.5, 34, w, h, f === 1 ? `${gb}G` : '', 2.2)
+          + T(x + 16.5 + w / 2, 34 - h - 3, name, 2.2, 'n', 'text-anchor="middle"');
+      }).join('');
+    });
+  }
+
+  // 4：cargo clean 报的数比 du 大
+  {
+    const svg = document.getElementById('p4');
+    const FS = 2.4, X = 31.5;
+    const LINES = [['$ cargo clean -n', 's'], ['Summary 158422 files,', 's'], ['58.0GiB total', 'a'], ['$ du -sh target', 's'], ['33G    target', 'G']];
+    svg.innerHTML = floor + R(0, 29, 80, 1, 'n') + R(0, 30, 80, 1, 'L')
+      + R(28, 2, 42, 23, 'l') + R(28, 2, 42, 1, 'L') + R(30, 4, 38, 18, 'K') + R(46, 25, 6, 4, 'L');
+    const scr = layer(svg);
+    sprite(layer(svg, 5, 13), [
+      rects(clawd({ face: 'right', eyes: 'open', look: 1 })),
+      rects(clawd({ face: 'right', eyes: 'wide', look: 1, arms: ['high', 'high'] })),
+      rects(clawd({ face: 'right', eyes: 'sad', tear: true })),
+    ], [[0, 1]]);
+    const me = svg.lastChild;
+    const kids = [...me.children];
+    const pose = (i) => kids.forEach((g, j) => (j === i ? g.removeAttribute('display') : g.setAttribute('display', 'none')));
+    every((t) => {
+      const k = t % 64;
+      const n = k < 6 ? 1 : k < 12 ? 3 : k < 30 ? 3 : 5;
+      scr.innerHTML = LINES.slice(0, n).map(([s, c], i) => T(X, 8 + i * 3.3, s, FS, c)).join('');
+      pose(k < 12 ? 0 : k < 30 ? 1 : 2);
+    });
+  }
+})();
+</script>
+</body>
+</html>
